@@ -20,6 +20,7 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TopFieldDocs;
 import org.apache.lucene.search.TotalHits;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.lucene.search.TopDocsAndMaxScore;
@@ -42,6 +43,7 @@ import org.elasticsearch.threadpool.ThreadPool;
 import java.io.IOException;
 import java.util.LinkedList;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 
 import static org.elasticsearch.search.query.QueryCollectorContext.createEarlyTerminationCollectorContext;
 import static org.elasticsearch.search.query.QueryCollectorContext.createFilteredCollectorContext;
@@ -230,7 +232,23 @@ public class QueryPhase {
         }
         QuerySearchResult queryResult = searchContext.queryResult();
         try {
-            searcher.search(query, queryCollector);
+            if(searcher.getExecutor() != null && searchContext.aggregations() == null){
+                if(searchContext.sort() != null){
+                    TopFieldDocs topFieldDocs = searcher.search(query, searchContext.size(), searchContext.sort().sort);
+                    queryResult.topDocs(new TopDocsAndMaxScore(topFieldDocs, Float.NaN), searchContext.sort().formats);
+                }else{
+                    TopDocs topDocs = searcher.search(query, searchContext.size());
+                    float score = Float.NaN;
+                    if(topDocs.scoreDocs.length > 0){
+                        score = topDocs.scoreDocs[0].score;
+                    }
+                    queryResult.topDocs(new TopDocsAndMaxScore(topDocs, score), null);
+                }
+                ((ThreadPoolExecutor)(searcher.getExecutor())).shutdown();
+                collectors.clear();
+            }else{
+                searcher.search(query, queryCollector);
+            }
         } catch (EarlyTerminatingCollector.EarlyTerminationException e) {
             queryResult.terminatedEarly(true);
         } catch (TimeExceededException e) {

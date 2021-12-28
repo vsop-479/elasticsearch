@@ -74,6 +74,7 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
 
     public static final ParseField FROM_FIELD = new ParseField("from");
     public static final ParseField SIZE_FIELD = new ParseField("size");
+    public static final ParseField QUERY_THREADS_FIELD = new ParseField("query_threads");
     public static final ParseField TIMEOUT_FIELD = new ParseField("timeout");
     public static final ParseField TERMINATE_AFTER_FIELD = new ParseField("terminate_after");
     public static final ParseField QUERY_FIELD = new ParseField("query");
@@ -138,6 +139,8 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     private int from = -1;
 
     private int size = -1;
+
+    private int queryThreads = -1;
 
     private Boolean explain;
 
@@ -220,6 +223,9 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
             scriptFields = in.readList(ScriptField::new);
         }
         size = in.readVInt();
+        if(in.getVersion().onOrAfter(Version.V_8_0_0)){
+            queryThreads = in.readVInt();
+        }
         if (in.readBoolean()) {
             int size = in.readVInt();
             sorts = new ArrayList<>();
@@ -280,6 +286,9 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
             out.writeList(scriptFields);
         }
         out.writeVInt(size);
+        if(out.getVersion().onOrAfter(Version.V_8_0_0)){
+            out.writeVInt(queryThreads);
+        }
         boolean hasSorts = sorts != null;
         out.writeBoolean(hasSorts);
         if (hasSorts) {
@@ -393,6 +402,22 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     public int size() {
         return size;
     }
+
+    /**
+     * The number of queryThreads. Defaults to -1. Query executed by caller.
+     */
+    public SearchSourceBuilder queryThreads(int queryThreads){
+        if(queryThreads < 0) {
+            throw new IllegalArgumentException("[queryThreads] parameter cannot be negative, found [" + queryThreads + "]");
+        }
+        this.queryThreads = queryThreads;
+        return this;
+    }
+
+    /**
+     * Gets the number of queryThreads.
+     */
+    public int queryThreads() { return queryThreads; }
 
     /**
      * Sets the minimum score below which docs will be filtered out.
@@ -1088,6 +1113,7 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
         rewrittenBuilder.searchAfterBuilder = searchAfterBuilder;
         rewrittenBuilder.sliceBuilder = slice;
         rewrittenBuilder.size = size;
+        rewrittenBuilder.queryThreads = queryThreads;
         rewrittenBuilder.sorts = sorts;
         rewrittenBuilder.stats = stats;
         rewrittenBuilder.suggestBuilder = suggestBuilder;
@@ -1143,7 +1169,9 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
                     } else {
                         size(parsedSize);
                     }
-                } else if (TIMEOUT_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
+                } else if (QUERY_THREADS_FIELD.match(currentFieldName, parser.getDeprecationHandler())){
+                    queryThreads = parser.intValue();
+                }else if (TIMEOUT_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
                     timeout = TimeValue.parseTimeValue(parser.text(), null, TIMEOUT_FIELD.getPreferredName());
                 } else if (TERMINATE_AFTER_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
                     terminateAfter(parser.intValue());
@@ -1339,6 +1367,9 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
         }
         if (size != -1) {
             builder.field(SIZE_FIELD.getPreferredName(), size);
+        }
+        if(queryThreads != -1) {
+            builder.field(QUERY_THREADS_FIELD.getPreferredName(), queryThreads);
         }
 
         if (timeout != null && timeout.equals(TimeValue.MINUS_ONE) == false) {

@@ -18,6 +18,9 @@ import org.apache.lucene.search.Query;
 import org.elasticsearch.action.search.SearchShardTask;
 import org.elasticsearch.action.search.SearchType;
 import org.elasticsearch.common.lucene.search.Queries;
+import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
+import org.elasticsearch.common.util.concurrent.EsExecutors;
+import org.elasticsearch.common.util.concurrent.SizeBlockingQueue;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.index.IndexService;
@@ -60,6 +63,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 
 final class DefaultSearchContext extends SearchContext {
@@ -148,12 +154,20 @@ final class DefaultSearchContext extends SearchContext {
         this.indexShard = readerContext.indexShard();
 
         Engine.Searcher engineSearcher = readerContext.acquireSearcher("search");
+        Executor executor = null;
+        int queryThreads = request.source().queryThreads();
+        if(queryThreads > 0){
+            executor = new ThreadPoolExecutor(queryThreads, queryThreads, 0, TimeUnit.MILLISECONDS,
+                new SizeBlockingQueue<>(ConcurrentCollections.<Runnable>newBlockingQueue(), queryThreads),
+                EsExecutors.daemonThreadFactory("elasticsearch[query]"), new ThreadPoolExecutor.CallerRunsPolicy());
+        }
         this.searcher = new ContextIndexSearcher(
             engineSearcher.getIndexReader(),
             engineSearcher.getSimilarity(),
             engineSearcher.getQueryCache(),
             engineSearcher.getQueryCachingPolicy(),
-            lowLevelCancellation
+            lowLevelCancellation,
+            executor
         );
         releasables.addAll(List.of(engineSearcher, searcher));
 

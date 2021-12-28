@@ -13,16 +13,16 @@
 //// SecurityManager impl:
 //// Must have all permissions to properly perform access checks
 
-grant codeBase "${codebase.elasticsearch-secure-sm}" {
-  permission java.security.AllPermission;
-};
+//grant codeBase "${codebase.elasticsearch-secure-sm}" {
+  //permission java.security.AllPermission;
+//};
 
 //// Elasticsearch core:
 //// These are only allowed inside the server jar, not in plugins
-grant codeBase "${codebase.elasticsearch}" {
-  // needed for loading plugins which may expect the context class loader to be set
-  permission java.lang.RuntimePermission "setContextClassLoader";
-};
+//grant codeBase "${codebase.elasticsearch}" {
+  //// needed for loading plugins which may expect the context class loader to be set
+  //permission java.lang.RuntimePermission "setContextClassLoader";
+//};
 
 //// Very special jar permissions:
 //// These are dangerous permissions that we don't want to grant to everything.
@@ -43,10 +43,10 @@ grant codeBase "${codebase.lucene-misc}" {
   permission java.nio.file.LinkPermission "hard";
 };
 
-grant codeBase "${codebase.elasticsearch-plugin-classloader}" {
-  // needed to create the classloader which allows plugins to extend other plugins
-  permission java.lang.RuntimePermission "createClassLoader";
-};
+//grant codeBase "${codebase.elasticsearch-plugin-classloader}" {
+  //// needed to create the classloader which allows plugins to extend other plugins
+  //permission java.lang.RuntimePermission "createClassLoader";
+//};
 
 grant codeBase "${codebase.jna}" {
   // for registering native methods
@@ -56,6 +56,17 @@ grant codeBase "${codebase.jna}" {
 //// Everything else:
 
 grant {
+    // add
+  permission java.lang.RuntimePermission "createClassLoader";
+  permission java.lang.RuntimePermission "getClassLoader";
+  permission java.lang.RuntimePermission "setContextClassLoader";
+  permission javax.management.MBeanTrustPermission "register";
+  permission javax.management.MBeanServerPermission "createMBeanServer";
+  permission javax.management.MBeanPermission "*", "registerMBean";
+  permission javax.management.MBeanPermission "*", "queryNames";
+  permission java.net.SocketPermission "*", "accept,resolve";
+  permission java.net.SocketPermission "*", "connect,resolve";
+
   // needed by vendored Guice
   permission java.lang.RuntimePermission "accessClassInPackage.jdk.internal.vm.annotation";
 
@@ -144,11 +155,14 @@ grant {
   permission java.io.FilePermission "/proc/self/mountinfo", "read";
   permission java.io.FilePermission "/proc/diskstats", "read";
 
-  // control group stats on Linux. cgroup v2 stats are in an unpredicable
-  // location under `/sys/fs/cgroup`, so unfortunately we have to allow
-  // read access to the entire directory hierarchy.
+  // control group stats on Linux
   permission java.io.FilePermission "/proc/self/cgroup", "read";
-  permission java.io.FilePermission "/sys/fs/cgroup/-", "read";
+  permission java.io.FilePermission "/sys/fs/cgroup/cpu", "read";
+  permission java.io.FilePermission "/sys/fs/cgroup/cpu/-", "read";
+  permission java.io.FilePermission "/sys/fs/cgroup/cpuacct", "read";
+  permission java.io.FilePermission "/sys/fs/cgroup/cpuacct/-", "read";
+  permission java.io.FilePermission "/sys/fs/cgroup/memory", "read";
+  permission java.io.FilePermission "/sys/fs/cgroup/memory/-", "read";
 
   // system memory on Linux systems affected by JDK bug (#66629)
   permission java.io.FilePermission "/proc/meminfo", "read";
