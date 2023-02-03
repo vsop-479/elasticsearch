@@ -15,7 +15,7 @@ import org.elasticsearch.test.cluster.SettingsProvider;
 import org.elasticsearch.test.cluster.local.distribution.DistributionType;
 import org.elasticsearch.test.cluster.local.model.User;
 import org.elasticsearch.test.cluster.util.Version;
-import org.elasticsearch.test.cluster.util.resource.TextResource;
+import org.elasticsearch.test.cluster.util.resource.Resource;
 
 import java.util.HashMap;
 import java.util.List;
@@ -26,10 +26,10 @@ import java.util.stream.Collectors;
 public class LocalClusterSpec implements ClusterSpec {
     private final String name;
     private final List<User> users;
-    private final List<TextResource> roleFiles;
+    private final List<Resource> roleFiles;
     private List<LocalNodeSpec> nodes;
 
-    public LocalClusterSpec(String name, List<User> users, List<TextResource> roleFiles) {
+    public LocalClusterSpec(String name, List<User> users, List<Resource> roleFiles) {
         this.name = name;
         this.users = users;
         this.roleFiles = roleFiles;
@@ -43,7 +43,7 @@ public class LocalClusterSpec implements ClusterSpec {
         return users;
     }
 
-    public List<TextResource> getRoleFiles() {
+    public List<Resource> getRoleFiles() {
         return roleFiles;
     }
 
@@ -69,7 +69,6 @@ public class LocalClusterSpec implements ClusterSpec {
     public static class LocalNodeSpec {
         private final LocalClusterSpec cluster;
         private final String name;
-        private final Version version;
         private final List<SettingsProvider> settingsProviders;
         private final Map<String, String> settings;
         private final List<EnvironmentProvider> environmentProviders;
@@ -79,6 +78,11 @@ public class LocalClusterSpec implements ClusterSpec {
         private final DistributionType distributionType;
         private final Set<FeatureFlag> features;
         private final Map<String, String> keystoreSettings;
+        private final Map<String, Resource> keystoreFiles;
+        private final String keystorePassword;
+        private final Map<String, Resource> extraConfigFiles;
+        private final Map<String, String> systemProperties;
+        private Version version;
 
         public LocalNodeSpec(
             LocalClusterSpec cluster,
@@ -92,7 +96,11 @@ public class LocalClusterSpec implements ClusterSpec {
             Set<String> plugins,
             DistributionType distributionType,
             Set<FeatureFlag> features,
-            Map<String, String> keystoreSettings
+            Map<String, String> keystoreSettings,
+            Map<String, Resource> keystoreFiles,
+            String keystorePassword,
+            Map<String, Resource> extraConfigFiles,
+            Map<String, String> systemProperties
         ) {
             this.cluster = cluster;
             this.name = name;
@@ -106,6 +114,14 @@ public class LocalClusterSpec implements ClusterSpec {
             this.distributionType = distributionType;
             this.features = features;
             this.keystoreSettings = keystoreSettings;
+            this.keystoreFiles = keystoreFiles;
+            this.keystorePassword = keystorePassword;
+            this.extraConfigFiles = extraConfigFiles;
+            this.systemProperties = systemProperties;
+        }
+
+        void setVersion(Version version) {
+            this.version = version;
         }
 
         public LocalClusterSpec getCluster() {
@@ -124,7 +140,7 @@ public class LocalClusterSpec implements ClusterSpec {
             return cluster.getUsers();
         }
 
-        public List<TextResource> getRolesFiles() {
+        public List<Resource> getRolesFiles() {
             return cluster.getRoleFiles();
         }
 
@@ -148,14 +164,44 @@ public class LocalClusterSpec implements ClusterSpec {
             return keystoreSettings;
         }
 
-        public boolean isSecurityEnabled() {
-            return Boolean.parseBoolean(
-                resolveSettings().getOrDefault("xpack.security.enabled", getVersion().onOrAfter("8.0.0") ? "true" : "false")
-            );
+        public Map<String, Resource> getKeystoreFiles() {
+            return keystoreFiles;
         }
 
+        public String getKeystorePassword() {
+            return keystorePassword;
+        }
+
+        public Map<String, Resource> getExtraConfigFiles() {
+            return extraConfigFiles;
+        }
+
+        public Map<String, String> getSystemProperties() {
+            return systemProperties;
+        }
+
+        public boolean isSecurityEnabled() {
+            return Boolean.parseBoolean(getSetting("xpack.security.enabled", getVersion().onOrAfter("8.0.0") ? "true" : "false"));
+        }
+
+        public boolean isMasterEligible() {
+            return getSetting("node.roles", "master").contains("master");
+        }
+
+        /**
+         * Return node configured setting or the provided default if no explicit value has been configured. This method returns all
+         * settings, to include security settings provided to the keystore
+         *
+         * @param setting the setting name
+         * @param defaultValue a default value
+         * @return the configured setting value or provided default
+         */
         public String getSetting(String setting, String defaultValue) {
-            return resolveSettings().getOrDefault(setting, defaultValue);
+            Map<String, String> allSettings = new HashMap<>();
+            allSettings.putAll(resolveSettings());
+            allSettings.putAll(keystoreSettings);
+
+            return allSettings.getOrDefault(setting, defaultValue);
         }
 
         /**
@@ -171,7 +217,7 @@ public class LocalClusterSpec implements ClusterSpec {
          */
         public Map<String, String> resolveSettings() {
             Map<String, String> resolvedSettings = new HashMap<>();
-            settingsProviders.forEach(p -> resolvedSettings.putAll(p.get(this)));
+            settingsProviders.forEach(p -> resolvedSettings.putAll(p.get(getFilteredSpec(p))));
             resolvedSettings.putAll(settings);
             return resolvedSettings;
         }
@@ -192,6 +238,44 @@ public class LocalClusterSpec implements ClusterSpec {
             environmentProviders.forEach(p -> resolvedEnvironment.putAll(p.get(this)));
             resolvedEnvironment.putAll(environment);
             return resolvedEnvironment;
+        }
+
+        /**
+         * Returns a new {@link LocalNodeSpec} without the given {@link SettingsProvider}. This is needed when resolving settings from a
+         * settings provider to avoid infinite recursion.
+         *
+         * @param filteredProvider the provider to omit from the new node spec
+         * @return a new local node spec
+         */
+        private LocalNodeSpec getFilteredSpec(SettingsProvider filteredProvider) {
+            LocalClusterSpec newCluster = new LocalClusterSpec(cluster.name, cluster.users, cluster.roleFiles);
+
+            List<LocalNodeSpec> nodeSpecs = cluster.nodes.stream()
+                .map(
+                    n -> new LocalNodeSpec(
+                        newCluster,
+                        n.name,
+                        n.version,
+                        n.settingsProviders.stream().filter(s -> s != filteredProvider).toList(),
+                        n.settings,
+                        n.environmentProviders,
+                        n.environment,
+                        n.modules,
+                        n.plugins,
+                        n.distributionType,
+                        n.features,
+                        n.keystoreSettings,
+                        n.keystoreFiles,
+                        n.keystorePassword,
+                        n.extraConfigFiles,
+                        n.systemProperties
+                    )
+                )
+                .toList();
+
+            newCluster.setNodes(nodeSpecs);
+
+            return nodeSpecs.stream().filter(n -> n.getName().equals(this.getName())).findFirst().get();
         }
     }
 }

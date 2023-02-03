@@ -13,24 +13,27 @@ import org.elasticsearch.test.cluster.local.LocalClusterSpec.LocalNodeSpec;
 import org.elasticsearch.test.cluster.local.distribution.DistributionType;
 import org.elasticsearch.test.cluster.local.model.User;
 import org.elasticsearch.test.cluster.util.Version;
-import org.elasticsearch.test.cluster.util.resource.TextResource;
+import org.elasticsearch.test.cluster.util.resource.Resource;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 public class DefaultLocalClusterSpecBuilder extends AbstractLocalSpecBuilder<LocalClusterSpecBuilder> implements LocalClusterSpecBuilder {
     private String name = "test-cluster";
     private final List<DefaultLocalNodeSpecBuilder> nodeBuilders = new ArrayList<>();
     private final List<User> users = new ArrayList<>();
-    private final List<TextResource> roleFiles = new ArrayList<>();
+    private final List<Resource> roleFiles = new ArrayList<>();
+    private final List<Supplier<LocalClusterConfigProvider>> lazyConfigProviders = new ArrayList<>();
 
     public DefaultLocalClusterSpecBuilder() {
         super(null);
+        this.apply(new FipsEnabledClusterConfigProvider());
         this.settings(new DefaultSettingsProvider());
         this.environment(new DefaultEnvironmentProvider());
-        this.rolesFile(TextResource.fromClasspath("default_test_roles.yml"));
+        this.rolesFile(Resource.fromClasspath("default_test_roles.yml"));
     }
 
     @Override
@@ -42,6 +45,12 @@ public class DefaultLocalClusterSpecBuilder extends AbstractLocalSpecBuilder<Loc
     @Override
     public DefaultLocalClusterSpecBuilder apply(LocalClusterConfigProvider configProvider) {
         configProvider.apply(this);
+        return this;
+    }
+
+    @Override
+    public LocalClusterSpecBuilder apply(Supplier<LocalClusterConfigProvider> configProvider) {
+        lazyConfigProviders.add(configProvider);
         return this;
     }
 
@@ -95,7 +104,7 @@ public class DefaultLocalClusterSpecBuilder extends AbstractLocalSpecBuilder<Loc
     }
 
     @Override
-    public DefaultLocalClusterSpecBuilder rolesFile(TextResource rolesFile) {
+    public DefaultLocalClusterSpecBuilder rolesFile(Resource rolesFile) {
         this.roleFiles.add(rolesFile);
         return this;
     }
@@ -116,7 +125,28 @@ public class DefaultLocalClusterSpecBuilder extends AbstractLocalSpecBuilder<Loc
         clusterSpec.setNodes(nodeSpecs);
         clusterSpec.validate();
 
-        return new LocalElasticsearchCluster(clusterSpec);
+        return new LocalElasticsearchCluster(this);
+    }
+
+    LocalClusterSpec buildClusterSpec() {
+        // Apply lazily provided configuration
+        lazyConfigProviders.forEach(s -> s.get().apply(this));
+
+        List<User> clusterUsers = users.isEmpty() ? List.of(User.DEFAULT_USER) : users;
+        LocalClusterSpec clusterSpec = new LocalClusterSpec(name, clusterUsers, roleFiles);
+        List<LocalNodeSpec> nodeSpecs;
+
+        if (nodeBuilders.isEmpty()) {
+            // No node-specific configuration so assume a single-node cluster
+            nodeSpecs = List.of(new DefaultLocalNodeSpecBuilder(this).build(clusterSpec));
+        } else {
+            nodeSpecs = nodeBuilders.stream().map(node -> node.build(clusterSpec)).toList();
+        }
+
+        clusterSpec.setNodes(nodeSpecs);
+        clusterSpec.validate();
+
+        return clusterSpec;
     }
 
     public static class DefaultLocalNodeSpecBuilder extends AbstractLocalSpecBuilder<LocalNodeSpecBuilder> implements LocalNodeSpecBuilder {
@@ -137,7 +167,7 @@ public class DefaultLocalClusterSpecBuilder extends AbstractLocalSpecBuilder<Loc
             return new LocalNodeSpec(
                 cluster,
                 name,
-                Version.CURRENT,
+                Optional.ofNullable(getVersion()).orElse(Version.CURRENT),
                 getSettingsProviders(),
                 getSettings(),
                 getEnvironmentProviders(),
@@ -146,7 +176,11 @@ public class DefaultLocalClusterSpecBuilder extends AbstractLocalSpecBuilder<Loc
                 getPlugins(),
                 Optional.ofNullable(getDistributionType()).orElse(DistributionType.INTEG_TEST),
                 getFeatures(),
-                getKeystoreSettings()
+                getKeystoreSettings(),
+                getKeystoreFiles(),
+                getKeystorePassword(),
+                getExtraConfigFiles(),
+                getSystemProperties()
             );
         }
     }

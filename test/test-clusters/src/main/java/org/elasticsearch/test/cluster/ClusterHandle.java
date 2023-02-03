@@ -8,6 +8,8 @@
 
 package org.elasticsearch.test.cluster;
 
+import org.elasticsearch.test.cluster.util.Version;
+
 import java.io.Closeable;
 
 /**
@@ -26,6 +28,13 @@ public interface ClusterHandle extends Closeable {
      * @param forcibly whether to forcibly terminate the cluster
      */
     void stop(boolean forcibly);
+
+    /**
+     * Restarts the cluster. Effectively the same as calling {@link #stop(boolean)} followed by {@link #start()}
+     *
+     * @param forcibly whether to ficibly terminate the cluster
+     */
+    void restart(boolean forcibly);
 
     /**
      * Whether the cluster is started or not. This method makes no guarantees on cluster availability, only that the node processes have
@@ -66,4 +75,19 @@ public interface ClusterHandle extends Closeable {
      * @return cluster node TCP transport endpoints
      */
     String getTransportEndpoint(int index);
+
+    /**
+     * Upgrades a single node to the given version. Method blocks until the node is back up and ready to respond to requests.
+     *
+     * @param index index of node ot upgrade
+     * @param version version to upgrade to
+     */
+    void upgradeNodeToVersion(int index, Version version);
+
+    /**
+     * Performs a "full cluster restart" upgrade to the given version. Method blocks until the cluster is restarted and available.
+     *
+     * @param version version to upgrade to
+     */
+    void upgradeToVersion(Version version);
 }
