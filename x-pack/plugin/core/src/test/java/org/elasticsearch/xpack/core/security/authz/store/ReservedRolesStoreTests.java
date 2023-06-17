@@ -52,9 +52,9 @@ import org.elasticsearch.action.ingest.DeletePipelineAction;
 import org.elasticsearch.action.ingest.GetPipelineAction;
 import org.elasticsearch.action.ingest.PutPipelineAction;
 import org.elasticsearch.action.ingest.SimulatePipelineAction;
-import org.elasticsearch.action.main.MainAction;
 import org.elasticsearch.action.search.MultiSearchAction;
 import org.elasticsearch.action.search.SearchAction;
+import org.elasticsearch.action.search.SearchShardsAction;
 import org.elasticsearch.action.support.WriteRequest;
 import org.elasticsearch.action.update.UpdateAction;
 import org.elasticsearch.cluster.metadata.AliasMetadata;
@@ -63,7 +63,9 @@ import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.cluster.metadata.Metadata;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.set.Sets;
+import org.elasticsearch.rest.root.MainAction;
 import org.elasticsearch.test.ESTestCase;
+import org.elasticsearch.transport.TcpTransport;
 import org.elasticsearch.transport.TransportRequest;
 import org.elasticsearch.xpack.core.XPackPlugin;
 import org.elasticsearch.xpack.core.action.XPackInfoAction;
@@ -180,13 +182,11 @@ import org.elasticsearch.xpack.core.security.authc.AuthenticationTestHelper;
 import org.elasticsearch.xpack.core.security.authz.RoleDescriptor;
 import org.elasticsearch.xpack.core.security.authz.accesscontrol.IndicesAccessControl;
 import org.elasticsearch.xpack.core.security.authz.permission.FieldPermissionsCache;
+import org.elasticsearch.xpack.core.security.authz.permission.RemoteIndicesPermission;
 import org.elasticsearch.xpack.core.security.authz.permission.Role;
 import org.elasticsearch.xpack.core.security.authz.privilege.ApplicationPrivilegeDescriptor;
 import org.elasticsearch.xpack.core.security.authz.privilege.ApplicationPrivilegeTests;
 import org.elasticsearch.xpack.core.security.test.TestRestrictedIndices;
-import org.elasticsearch.xpack.core.security.user.APMSystemUser;
-import org.elasticsearch.xpack.core.security.user.BeatsSystemUser;
-import org.elasticsearch.xpack.core.security.user.LogstashSystemUser;
 import org.elasticsearch.xpack.core.security.user.RemoteMonitoringUser;
 import org.elasticsearch.xpack.core.security.user.SystemUser;
 import org.elasticsearch.xpack.core.security.user.UsernamesField;
@@ -213,6 +213,7 @@ import org.elasticsearch.xpack.core.watcher.transport.actions.service.WatcherSer
 import org.elasticsearch.xpack.core.watcher.transport.actions.stats.WatcherStatsAction;
 import org.elasticsearch.xpack.core.watcher.watch.Watch;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -222,6 +223,10 @@ import java.util.Set;
 import java.util.SortedMap;
 
 import static org.elasticsearch.xpack.core.security.test.TestRestrictedIndices.RESTRICTED_INDICES;
+import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.hamcrest.Matchers.emptyArray;
+import static org.hamcrest.Matchers.emptyIterable;
+import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasEntry;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
@@ -259,9 +264,9 @@ public class ReservedRolesStoreTests extends ESTestCase {
         assertThat(ReservedRolesStore.isReserved("watcher_user"), is(true));
         assertThat(ReservedRolesStore.isReserved("watcher_admin"), is(true));
         assertThat(ReservedRolesStore.isReserved("beats_admin"), is(true));
-        assertThat(ReservedRolesStore.isReserved(LogstashSystemUser.ROLE_NAME), is(true));
-        assertThat(ReservedRolesStore.isReserved(BeatsSystemUser.ROLE_NAME), is(true));
-        assertThat(ReservedRolesStore.isReserved(APMSystemUser.ROLE_NAME), is(true));
+        assertThat(ReservedRolesStore.isReserved(UsernamesField.LOGSTASH_ROLE), is(true));
+        assertThat(ReservedRolesStore.isReserved(UsernamesField.BEATS_ROLE), is(true));
+        assertThat(ReservedRolesStore.isReserved(UsernamesField.APM_ROLE), is(true));
         assertThat(ReservedRolesStore.isReserved(RemoteMonitoringUser.COLLECTION_ROLE_NAME), is(true));
         assertThat(ReservedRolesStore.isReserved(RemoteMonitoringUser.INDEXING_ROLE_NAME), is(true));
         assertThat(ReservedRolesStore.isReserved("snapshot_user"), is(true));
@@ -929,7 +934,8 @@ public class ReservedRolesStoreTests extends ESTestCase {
             // Hidden data indices for endpoint package
             ".logs-endpoint.action.responses-" + randomAlphaOfLengthBetween(3, 8),
             ".logs-endpoint.diagnostic.collection-" + randomAlphaOfLengthBetween(3, 8),
-            ".logs-endpoint.actions-" + randomAlphaOfLengthBetween(3, 8)
+            ".logs-endpoint.actions-" + randomAlphaOfLengthBetween(3, 8),
+            "profiling-" + randomAlphaOfLengthBetween(3, 8)
         ).forEach(indexName -> {
             logger.info("index name [{}]", indexName);
             final IndexAbstraction indexAbstraction = mockIndexAbstraction(indexName);
@@ -973,7 +979,8 @@ public class ReservedRolesStoreTests extends ESTestCase {
                 || indexName.startsWith("synthetics-icmp-*")
                 || indexName.startsWith("synthetics-browser-*")
                 || indexName.startsWith("synthetics-browser.network-*")
-                || indexName.startsWith("synthetics-browser.screenshot-*");
+                || indexName.startsWith("synthetics-browser.screenshot-*")
+                || indexName.startsWith("profiling-*");
             assertThat(kibanaRole.indices().allowedIndicesMatcher(DeleteIndexAction.NAME).test(indexAbstraction), is(isAlsoIlmDeleteIndex));
         });
 
@@ -1038,6 +1045,65 @@ public class ReservedRolesStoreTests extends ESTestCase {
             assertThat(kibanaRole.indices().allowedIndicesMatcher(RolloverAction.NAME).test(indexAbstraction), is(false));
         });
 
+        // Test allow permissions on Threat Intel (ti*) dest indices created by latest transform : "create_index", "delete_index", "read",
+        // "index", "delete", IndicesAliasesAction.NAME, UpdateSettingsAction.NAME
+        Arrays.asList("logs-ti_recordedfuture_latest.threat", "logs-ti_anomali_latest.threatstream").forEach(indexName -> {
+            final IndexAbstraction indexAbstraction = mockIndexAbstraction(indexName);
+            // Allow search and indexing
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(SearchAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(GetAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(IndexAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(UpdateAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(BulkAction.NAME).test(indexAbstraction), is(true));
+            // Allow create and delete index, modifying aliases, and updating index settings
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(CreateIndexAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(DeleteIndexAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(GetAliasesAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(IndicesAliasesAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(UpdateSettingsAction.NAME).test(indexAbstraction), is(true));
+
+            // Allow deleting documents
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(DeleteAction.NAME).test(indexAbstraction), is(true));
+
+            // Implied by the overall view_index_metadata and monitor privilege
+            assertViewIndexMetadata(kibanaRole, indexName);
+            assertThat(
+                kibanaRole.indices().allowedIndicesMatcher("indices:monitor/" + randomAlphaOfLengthBetween(3, 8)).test(indexAbstraction),
+                is(true)
+            );
+        });
+
+        // Test allow permissions on Threat Intel (ti*) source indices required by latest transform : "read", "view_index_metadata",
+        // IndicesAliasesAction.NAME, PutMappingAction.NAME, UpdateSettingsAction.NAME, "delete_index"
+        Arrays.asList(
+            "logs-ti_recordedfuture.threat-default",
+            "logs-ti_anomali.threatstream-default",
+            "logs-ti_recordedfuture.threat-default" + randomAlphaOfLength(randomIntBetween(0, 13)),
+            "logs-ti_anomali.threatstream-default" + randomAlphaOfLength(randomIntBetween(0, 13))
+        ).forEach(indexName -> {
+            final IndexAbstraction indexAbstraction = mockIndexAbstraction(indexName);
+            // Allow read-only
+            assertThat(kibanaRole.indices().allowedIndicesMatcher("indices:foo").test(indexAbstraction), is(false));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher("indices:bar").test(indexAbstraction), is(false));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(CreateIndexAction.NAME).test(indexAbstraction), is(false));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(IndexAction.NAME).test(indexAbstraction), is(false));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(DeleteAction.NAME).test(indexAbstraction), is(false));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(UpdateSettingsAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(PutMappingAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(RolloverAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(DeleteIndexAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(SearchAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(MultiSearchAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(GetAction.NAME).test(indexAbstraction), is(true));
+
+            // Implied by the overall view_index_metadata and monitor privilege
+            assertViewIndexMetadata(kibanaRole, indexName);
+            assertThat(
+                kibanaRole.indices().allowedIndicesMatcher("indices:monitor/" + randomAlphaOfLengthBetween(3, 8)).test(indexAbstraction),
+                is(true)
+            );
+        });
+
         Arrays.asList(
             ".logs-osquery_manager.actions-" + randomAlphaOfLength(randomIntBetween(0, 13)),
             ".logs-osquery_manager.action.responses-" + randomAlphaOfLength(randomIntBetween(0, 13))
@@ -1082,11 +1148,31 @@ public class ReservedRolesStoreTests extends ESTestCase {
             assertThat(kibanaRole.indices().allowedIndicesMatcher(RolloverAction.NAME).test(indexAbstraction), is(true));
         });
 
+        Arrays.asList("logs-cloud_security_posture.vulnerabilities-" + randomAlphaOfLength(randomIntBetween(0, 13))).forEach((cspIndex) -> {
+            final IndexAbstraction indexAbstraction = mockIndexAbstraction(cspIndex);
+            assertThat(kibanaRole.indices().allowedIndicesMatcher("indices:foo").test(indexAbstraction), is(false));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher("indices:bar").test(indexAbstraction), is(false));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(DeleteIndexAction.NAME).test(indexAbstraction), is(false));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(GetIndexAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(CreateIndexAction.NAME).test(indexAbstraction), is(false));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(IndexAction.NAME).test(indexAbstraction), is(false));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(DeleteAction.NAME).test(indexAbstraction), is(false));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(SearchAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(MultiSearchAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(GetAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(READ_CROSS_CLUSTER_NAME).test(indexAbstraction), is(false));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(UpdateSettingsAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(PutMappingAction.NAME).test(indexAbstraction), is(true));
+            assertThat(kibanaRole.indices().allowedIndicesMatcher(RolloverAction.NAME).test(indexAbstraction), is(true));
+        });
+
         Arrays.asList(
             "logs-cloud_security_posture.findings_latest-default",
             "logs-cloud_security_posture.scores-default",
+            "logs-cloud_security_posture.vulnerabilities_latest-default",
             "logs-cloud_security_posture.findings_latest-default-" + Version.CURRENT,
-            "logs-cloud_security_posture.scores-default-" + Version.CURRENT
+            "logs-cloud_security_posture.scores-default-" + Version.CURRENT,
+            "logs-cloud_security_posture.vulnerabilities_latest-default" + Version.CURRENT
         ).forEach(indexName -> {
             logger.info("index name [{}]", indexName);
             final IndexAbstraction indexAbstraction = mockIndexAbstraction(indexName);
@@ -1159,6 +1245,9 @@ public class ReservedRolesStoreTests extends ESTestCase {
                 is(true)
             );
         });
+
+        Arrays.asList("risk-score.risk-score-" + randomAlphaOfLength(randomIntBetween(0, 13)))
+            .forEach(indexName -> assertAllIndicesAccessAllowed(kibanaRole, indexName));
     }
 
     public void testKibanaAdminRole() {
@@ -1406,6 +1495,18 @@ public class ReservedRolesStoreTests extends ESTestCase {
                 ),
             is(false)
         );
+
+        final String metricsPrefix = "metrics-";
+        assertNoAccessAllowed(monitoringUserRole, metricsPrefix + "system.cpu-default");
+        assertNoAccessAllowed(monitoringUserRole, metricsPrefix + "elastic_agent.filebeat-default");
+
+        assertOnlyReadAllowed(monitoringUserRole, metricsPrefix + "elasticsearch");
+        assertOnlyReadAllowed(monitoringUserRole, metricsPrefix + "elasticsearch.stack_monitoring.cluster_stats-default");
+        assertOnlyReadAllowed(monitoringUserRole, metricsPrefix + "elasticsearch.ingest_pipeline-default");
+        assertOnlyReadAllowed(monitoringUserRole, metricsPrefix + "kibana.stack_monitoring.stats-default");
+        assertOnlyReadAllowed(monitoringUserRole, metricsPrefix + "logstash.stack_monitoring.node_stats-default");
+        assertOnlyReadAllowed(monitoringUserRole, metricsPrefix + "beats.stack_monitoring.stats-default");
+        assertOnlyReadAllowed(monitoringUserRole, metricsPrefix + "enterprisesearch.stack_monitoring.health-default");
     }
 
     public void testRemoteMonitoringAgentRole() {
@@ -2132,7 +2233,7 @@ public class ReservedRolesStoreTests extends ESTestCase {
         final TransportRequest request = mock(TransportRequest.class);
         final Authentication authentication = AuthenticationTestHelper.builder().build();
 
-        RoleDescriptor roleDescriptor = new ReservedRolesStore().roleDescriptor(BeatsSystemUser.ROLE_NAME);
+        RoleDescriptor roleDescriptor = new ReservedRolesStore().roleDescriptor(UsernamesField.BEATS_ROLE);
         assertNotNull(roleDescriptor);
         assertThat(roleDescriptor.getMetadata(), hasEntry("_reserved", true));
 
@@ -2174,7 +2275,7 @@ public class ReservedRolesStoreTests extends ESTestCase {
         final TransportRequest request = mock(TransportRequest.class);
         final Authentication authentication = AuthenticationTestHelper.builder().build();
 
-        RoleDescriptor roleDescriptor = new ReservedRolesStore().roleDescriptor(APMSystemUser.ROLE_NAME);
+        RoleDescriptor roleDescriptor = new ReservedRolesStore().roleDescriptor(UsernamesField.APM_ROLE);
         assertNotNull(roleDescriptor);
         assertThat(roleDescriptor.getMetadata(), hasEntry("_reserved", true));
 
@@ -2963,6 +3064,74 @@ public class ReservedRolesStoreTests extends ESTestCase {
         assertThat(role.runAs().check(randomAlphaOfLengthBetween(1, 20)), is(false));
     }
 
+    public void testRemoteIndicesPrivilegesForSuperuserRole() {
+        final RoleDescriptor superuserRoleDescriptor = new ReservedRolesStore().roleDescriptor("superuser");
+        final Role superuserRole = Role.buildFromRoleDescriptor(
+            superuserRoleDescriptor,
+            new FieldPermissionsCache(Settings.EMPTY),
+            RESTRICTED_INDICES
+        );
+
+        if (TcpTransport.isUntrustedRemoteClusterEnabled()) {
+            assertThat(superuserRoleDescriptor.hasRemoteIndicesPrivileges(), is(true));
+            assertThat(
+                Arrays.stream(superuserRoleDescriptor.getRemoteIndicesPrivileges())
+                    .map(RoleDescriptor.RemoteIndicesPrivileges::indicesPrivileges)
+                    .toArray(RoleDescriptor.IndicesPrivileges[]::new),
+                equalTo(superuserRoleDescriptor.getIndicesPrivileges())
+            );
+            final List<RemoteIndicesPermission.RemoteIndicesGroup> remoteIndicesGroups = superuserRole.remoteIndices()
+                .remoteIndicesGroups();
+            assertThat(remoteIndicesGroups.size(), equalTo(1));
+            assertThat(remoteIndicesGroups.get(0).remoteClusterAliasMatcher().isTotal(), is(true));
+        } else {
+            assertThat(superuserRoleDescriptor.hasRemoteIndicesPrivileges(), is(false));
+            assertThat(superuserRoleDescriptor.getRemoteIndicesPrivileges(), emptyArray());
+            assertThat(superuserRole.remoteIndices(), is(RemoteIndicesPermission.NONE));
+        }
+    }
+
+    public void testRemoteIndicesPrivileges() {
+        final List<String> rolesWithRemoteIndicesPrivileges = new ArrayList<>();
+
+        for (RoleDescriptor roleDescriptor : new ReservedRolesStore().roleDescriptors()) {
+            if (roleDescriptor.getName().equals("superuser")) {
+                continue;  // superuser is tested separately
+            }
+            final Role role = Role.buildFromRoleDescriptor(roleDescriptor, new FieldPermissionsCache(Settings.EMPTY), RESTRICTED_INDICES);
+
+            if (TcpTransport.isUntrustedRemoteClusterEnabled()) {
+                // The assumption here is that any read_cross_cluster indices privileges should be paired with
+                // a corresponding remote indices privileges
+                final var readCrossClusterIndicesPrivileges = Arrays.stream(roleDescriptor.getIndicesPrivileges())
+                    .filter(ip -> Arrays.asList(ip.getPrivileges()).contains("read_cross_cluster"))
+                    .toArray(RoleDescriptor.IndicesPrivileges[]::new);
+                if (readCrossClusterIndicesPrivileges.length == 0) {
+                    assertThat(roleDescriptor.hasRemoteIndicesPrivileges(), is(false));
+                } else {
+                    assertThat(roleDescriptor.hasRemoteIndicesPrivileges(), is(true));
+                    assertThat(
+                        Arrays.stream(roleDescriptor.getRemoteIndicesPrivileges())
+                            .map(RoleDescriptor.RemoteIndicesPrivileges::indicesPrivileges)
+                            .toList(),
+                        containsInAnyOrder(readCrossClusterIndicesPrivileges)
+                    );
+                    rolesWithRemoteIndicesPrivileges.add(roleDescriptor.getName());
+                }
+            } else {
+                assertThat(roleDescriptor.hasRemoteIndicesPrivileges(), is(false));
+                assertThat(roleDescriptor.getRemoteIndicesPrivileges(), emptyArray());
+                assertThat(role.remoteIndices(), is(RemoteIndicesPermission.NONE));
+            }
+        }
+
+        if (TcpTransport.isUntrustedRemoteClusterEnabled()) {
+            assertThat(rolesWithRemoteIndicesPrivileges, containsInAnyOrder("kibana_system", "monitoring_user"));
+        } else {
+            assertThat(rolesWithRemoteIndicesPrivileges, emptyIterable());
+        }
+    }
+
     private void assertAllIndicesAccessAllowed(Role role, String index) {
         logger.info("index name [{}]", index);
         assertThat(role.indices().allowedIndicesMatcher("indices:foo").test(mockIndexAbstraction(index)), is(true));
@@ -3026,6 +3195,7 @@ public class ReservedRolesStoreTests extends ESTestCase {
             GetFieldMappingsAction.NAME + "*",
             GetMappingsAction.NAME,
             ClusterSearchShardsAction.NAME,
+            SearchShardsAction.NAME,
             ValidateQueryAction.NAME + "*",
             GetSettingsAction.NAME,
             ExplainLifecycleAction.NAME,

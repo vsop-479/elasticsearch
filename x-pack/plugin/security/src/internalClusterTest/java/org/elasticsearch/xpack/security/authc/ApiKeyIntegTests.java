@@ -46,6 +46,7 @@ import org.elasticsearch.test.TestSecurityClient;
 import org.elasticsearch.test.XContentTestUtils;
 import org.elasticsearch.test.rest.ObjectPath;
 import org.elasticsearch.threadpool.ThreadPool;
+import org.elasticsearch.transport.TcpTransport;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.XContentFactory;
 import org.elasticsearch.xcontent.XContentType;
@@ -273,6 +274,9 @@ public class ApiKeyIntegTests extends SecurityIntegTestCase {
         final long daysBetween = ChronoUnit.DAYS.between(start, expiration);
         assertThat(daysBetween, is(7L));
 
+        assertThat(getApiKeyDocument(response.getId()).get("type"), equalTo("rest"));
+        assertThat(getApiKeyInfo(client(), response.getId(), randomBoolean(), randomBoolean()).getType(), is(ApiKey.Type.REST));
+
         // create simple api key
         final CreateApiKeyResponse simple = new CreateApiKeyRequestBuilder(client).setName("simple").get();
         assertEquals("simple", simple.getName());
@@ -497,7 +501,7 @@ public class ApiKeyIntegTests extends SecurityIntegTestCase {
         } else {
             builder.put(ApiKeyService.DELETE_RETENTION_PERIOD.getKey(), TimeValue.timeValueDays(deleteRetentionPeriodDays));
         }
-        client().admin().cluster().prepareUpdateSettings().setPersistentSettings(builder).get();
+        updateClusterSettings(builder);
     }
 
     private void doTestInvalidKeysImmediatelyDeletedByRemover(String namePrefix) throws Exception {
@@ -2652,6 +2656,7 @@ public class ApiKeyIntegTests extends SecurityIntegTestCase {
     }
 
     private List<RoleDescriptor> randomRoleDescriptors() {
+        boolean allowRemoteIndices = TcpTransport.isUntrustedRemoteClusterEnabled();
         int caseNo = randomIntBetween(0, 3);
         return switch (caseNo) {
             case 0 -> List.of(new RoleDescriptor(randomAlphaOfLength(10), new String[] { "all" }, null, null));
@@ -2659,7 +2664,7 @@ public class ApiKeyIntegTests extends SecurityIntegTestCase {
                 new RoleDescriptor(randomAlphaOfLength(10), new String[] { "all" }, null, null),
                 randomValueOtherThanMany(
                     rd -> RoleDescriptorRequestValidator.validate(rd) != null,
-                    () -> RoleDescriptorTests.randomRoleDescriptor(false, false)
+                    () -> RoleDescriptorTests.randomRoleDescriptor(false, allowRemoteIndices, false)
                 )
             );
             case 2 -> null;
@@ -2697,6 +2702,9 @@ public class ApiKeyIntegTests extends SecurityIntegTestCase {
         final Map<String, Object> apiKeyDocMap = getApiKeyDocument(apiKeyId);
         final boolean useGetApiKey = randomBoolean();
         final ApiKey apiKeyInfo = getApiKeyInfo(client(), apiKeyId, true, useGetApiKey);
+        // Update does not change API key type
+        assertThat(apiKeyDocMap.get("type"), equalTo("rest"));
+        assertThat(apiKeyInfo.getType(), equalTo(ApiKey.Type.REST));
         for (Map.Entry<ApiKeyAttribute, Object> entry : attributes.entrySet()) {
             switch (entry.getKey()) {
                 case CREATOR -> {

@@ -22,7 +22,6 @@ import org.elasticsearch.cluster.TestShardRoutingRoleStrategies;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.metadata.Metadata;
-import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.IndexRoutingTable;
 import org.elasticsearch.cluster.routing.IndexShardRoutingTable;
 import org.elasticsearch.cluster.routing.RecoverySource;
@@ -35,7 +34,6 @@ import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.StreamInput;
-import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.set.Sets;
 import org.elasticsearch.indices.TestIndexNameExpressionResolver;
 import org.elasticsearch.test.ESTestCase;
@@ -120,9 +118,7 @@ public class ClusterStateHealthTests extends ESTestCase {
 
         setState(
             clusterService,
-            ClusterState.builder(clusterService.state())
-                .nodes(DiscoveryNodes.builder(clusterService.state().nodes()).masterNodeId(null))
-                .build()
+            ClusterState.builder(clusterService.state()).nodes(clusterService.state().nodes().withMasterNodeId(null)).build()
         );
 
         clusterService.addStateApplier(event -> {
@@ -140,7 +136,7 @@ public class ClusterStateHealthTests extends ESTestCase {
             .onNewClusterState(
                 "restore master",
                 () -> ClusterState.builder(currentState)
-                    .nodes(DiscoveryNodes.builder(currentState.nodes()).masterNodeId(currentState.nodes().getLocalNodeId()))
+                    .nodes(currentState.nodes().withMasterNodeId(currentState.nodes().getLocalNodeId()))
                     .incrementVersion()
                     .build(),
                 ActionListener.noop()
@@ -184,10 +180,7 @@ public class ClusterStateHealthTests extends ESTestCase {
             metadata.put(indexMetadata, true);
             routingTable.add(indexRoutingTable);
         }
-        ClusterState clusterState = ClusterState.builder(ClusterName.CLUSTER_NAME_SETTING.getDefault(Settings.EMPTY))
-            .metadata(metadata)
-            .routingTable(routingTable.build())
-            .build();
+        ClusterState clusterState = ClusterState.builder(ClusterName.DEFAULT).metadata(metadata).routingTable(routingTable.build()).build();
         String[] concreteIndices = indexNameExpressionResolver.concreteIndexNames(
             clusterState,
             IndicesOptions.strictExpand(),

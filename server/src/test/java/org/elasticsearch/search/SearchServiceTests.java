@@ -506,6 +506,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                 reader,
                 requestWithDefaultTimeout,
                 mock(SearchShardTask.class),
+                SearchService.ResultsType.NONE,
                 randomBoolean()
             )
         ) {
@@ -528,7 +529,13 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
         );
         try (
             ReaderContext reader = createReaderContext(indexService, indexShard);
-            SearchContext context = service.createContext(reader, requestWithCustomTimeout, mock(SearchShardTask.class), randomBoolean())
+            SearchContext context = service.createContext(
+                reader,
+                requestWithCustomTimeout,
+                mock(SearchShardTask.class),
+                SearchService.ResultsType.NONE,
+                randomBoolean()
+            )
         ) {
             // the search context should inherit the query timeout
             assertThat(context.timeout(), equalTo(TimeValue.timeValueSeconds(seconds)));
@@ -566,7 +573,13 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
         );
         try (
             ReaderContext reader = createReaderContext(indexService, indexShard);
-            SearchContext context = service.createContext(reader, request, mock(SearchShardTask.class), randomBoolean())
+            SearchContext context = service.createContext(
+                reader,
+                request,
+                mock(SearchShardTask.class),
+                SearchService.ResultsType.NONE,
+                randomBoolean()
+            )
         ) {
             assertNotNull(context);
         }
@@ -574,7 +587,13 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
         searchSourceBuilder.docValueField("unmapped_field");
         try (
             ReaderContext reader = createReaderContext(indexService, indexShard);
-            SearchContext context = service.createContext(reader, request, mock(SearchShardTask.class), randomBoolean())
+            SearchContext context = service.createContext(
+                reader,
+                request,
+                mock(SearchShardTask.class),
+                SearchService.ResultsType.NONE,
+                randomBoolean()
+            )
         ) {
             assertNotNull(context);
         }
@@ -583,7 +602,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
         try (ReaderContext reader = createReaderContext(indexService, indexShard)) {
             IllegalArgumentException ex = expectThrows(
                 IllegalArgumentException.class,
-                () -> service.createContext(reader, request, mock(SearchShardTask.class), randomBoolean())
+                () -> service.createContext(reader, request, mock(SearchShardTask.class), SearchService.ResultsType.NONE, randomBoolean())
             );
             assertEquals(
                 "Trying to retrieve too many docvalue_fields. Must be less than or equal to: [1] but was [2]. "
@@ -627,7 +646,15 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                 -1,
                 null
             );
-            try (SearchContext context = service.createContext(reader, request, mock(SearchShardTask.class), randomBoolean())) {
+            try (
+                SearchContext context = service.createContext(
+                    reader,
+                    request,
+                    mock(SearchShardTask.class),
+                    SearchService.ResultsType.NONE,
+                    randomBoolean()
+                )
+            ) {
                 Collection<FieldAndFormat> fields = context.docValuesContext().fields();
                 assertThat(fields, containsInAnyOrder(new FieldAndFormat("field1", null), new FieldAndFormat("field2", null)));
             }
@@ -668,7 +695,15 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
         );
 
         try (ReaderContext reader = createReaderContext(indexService, indexShard)) {
-            try (SearchContext context = service.createContext(reader, request, mock(SearchShardTask.class), randomBoolean())) {
+            try (
+                SearchContext context = service.createContext(
+                    reader,
+                    request,
+                    mock(SearchShardTask.class),
+                    SearchService.ResultsType.NONE,
+                    randomBoolean()
+                )
+            ) {
                 assertNotNull(context);
             }
             searchSourceBuilder.scriptField(
@@ -677,7 +712,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
             );
             IllegalArgumentException ex = expectThrows(
                 IllegalArgumentException.class,
-                () -> service.createContext(reader, request, mock(SearchShardTask.class), randomBoolean())
+                () -> service.createContext(reader, request, mock(SearchShardTask.class), SearchService.ResultsType.NONE, randomBoolean())
             );
             assertEquals(
                 "Trying to retrieve too many script_fields. Must be less than or equal to: ["
@@ -718,7 +753,13 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
         );
         try (
             ReaderContext reader = createReaderContext(indexService, indexShard);
-            SearchContext context = service.createContext(reader, request, mock(SearchShardTask.class), randomBoolean())
+            SearchContext context = service.createContext(
+                reader,
+                request,
+                mock(SearchShardTask.class),
+                SearchService.ResultsType.NONE,
+                randomBoolean()
+            )
         ) {
             assertEquals(0, context.scriptFields().fields().size());
         }
@@ -832,13 +873,9 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
     public static class FailOnRewriteQueryPlugin extends Plugin implements SearchPlugin {
         @Override
         public List<QuerySpec<?>> getQueries() {
-            return singletonList(
-                new QuerySpec<>(
-                    "fail_on_rewrite_query",
-                    FailOnRewriteQueryBuilder::new,
-                    parseContext -> { throw new UnsupportedOperationException("No query parser for this plugin"); }
-                )
-            );
+            return singletonList(new QuerySpec<>("fail_on_rewrite_query", FailOnRewriteQueryBuilder::new, parseContext -> {
+                throw new UnsupportedOperationException("No query parser for this plugin");
+            }));
         }
     }
 
@@ -934,7 +971,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                 new ShardSearchRequest(OriginalIndices.NONE, searchRequest, indexShard.shardId(), 0, 1, AliasFilter.EMPTY, 1f, -1, null)
             ).canMatch()
         );
-        assertEquals(6, numWrapInvocations.get());
+        assertEquals(5, numWrapInvocations.get());
 
         ShardSearchRequest request = new ShardSearchRequest(
             OriginalIndices.NONE,
@@ -990,13 +1027,13 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
 
         CountDownLatch latch = new CountDownLatch(1);
         SearchShardTask task = new SearchShardTask(123L, "", "", "", null, Collections.emptyMap());
-        assertEquals(8, numWrapInvocations.get());
+        assertEquals(7, numWrapInvocations.get());
         service.executeQueryPhase(request, task, new ActionListener<SearchPhaseResult>() {
             @Override
             public void onResponse(SearchPhaseResult searchPhaseResult) {
                 try {
                     // make sure that the wrapper is called when the query is actually executed
-                    assertEquals(9, numWrapInvocations.get());
+                    assertEquals(8, numWrapInvocations.get());
                 } finally {
                     latch.countDown();
                 }
@@ -1147,6 +1184,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
                     readerContext,
                     shardRequest,
                     mock(SearchShardTask.class),
+                    SearchService.ResultsType.QUERY,
                     true
                 )
             ) {
@@ -1189,7 +1227,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
         SearchService service = getInstanceFromNode(SearchService.class);
         AggregationReduceContext.Builder reduceContextBuilder = service.aggReduceContextBuilder(
             () -> false,
-            new SearchRequest().source(new SearchSourceBuilder())
+            new SearchRequest().source(new SearchSourceBuilder()).source().aggregations()
         );
         {
             AggregationReduceContext reduceContext = reduceContextBuilder.forFinalReduction();
@@ -1232,8 +1270,17 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
             assertEquals(expectedIndexName, searchShardTarget.getFullyQualifiedIndexName());
             assertEquals(clusterAlias, searchShardTarget.getClusterAlias());
             assertEquals(shardId, searchShardTarget.getShardId());
+
+            assertNull(searchContext.dfsResult());
+            searchContext.addDfsResult();
             assertSame(searchShardTarget, searchContext.dfsResult().getSearchShardTarget());
+
+            assertNull(searchContext.queryResult());
+            searchContext.addQueryResult();
             assertSame(searchShardTarget, searchContext.queryResult().getSearchShardTarget());
+
+            assertNull(searchContext.fetchResult());
+            searchContext.addFetchResult();
             assertSame(searchShardTarget, searchContext.fetchResult().getSearchShardTarget());
         }
     }
@@ -1257,7 +1304,7 @@ public class SearchServiceTests extends ESSingleNodeTestCase {
         try (ReaderContext reader = createReaderContext(indexService, indexService.getShard(shardId.id()))) {
             NullPointerException e = expectThrows(
                 NullPointerException.class,
-                () -> service.createContext(reader, request, mock(SearchShardTask.class), randomBoolean())
+                () -> service.createContext(reader, request, mock(SearchShardTask.class), SearchService.ResultsType.NONE, randomBoolean())
             );
             assertEquals("expected", e.getMessage());
         }

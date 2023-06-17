@@ -37,6 +37,7 @@ import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.core.IOUtils;
 import org.elasticsearch.index.IndexSettings;
+import org.elasticsearch.index.IndexVersion;
 import org.elasticsearch.index.fielddata.FieldDataContext;
 import org.elasticsearch.index.fielddata.IndexNumericFieldData;
 import org.elasticsearch.index.mapper.MappedFieldType.Relation;
@@ -127,7 +128,20 @@ public class NumberFieldTypeTests extends FieldTypeTestCase {
     }
 
     private static MappedFieldType unsearchable() {
-        return new NumberFieldType("field", NumberType.LONG, false, false, false, true, null, Collections.emptyMap(), null, false, null);
+        return new NumberFieldType(
+            "field",
+            NumberType.LONG,
+            false,
+            false,
+            false,
+            true,
+            null,
+            Collections.emptyMap(),
+            null,
+            false,
+            null,
+            null
+        );
     }
 
     public void testTermQuery() {
@@ -571,13 +585,7 @@ public class NumberFieldTypeTests extends FieldTypeTestCase {
 
     public void doTestIndexSortRangeQueries(NumberType type, Supplier<Number> valueSupplier) throws IOException {
         // Create index settings with an index sort.
-        Settings settings = Settings.builder()
-            .put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT)
-            .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
-            .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 1)
-            .put("index.sort.field", "field")
-            .build();
-
+        Settings settings = indexSettings(Version.CURRENT, 1, 1).put("index.sort.field", "field").build();
         IndexMetadata indexMetadata = new IndexMetadata.Builder("index").settings(settings).build();
         IndexSettings indexSettings = new IndexSettings(indexMetadata, settings);
 
@@ -610,7 +618,7 @@ public class NumberFieldTypeTests extends FieldTypeTestCase {
             null,
             null,
             null,
-            null,
+            MappingLookup.EMPTY,
             null,
             null,
             parserConfig(),
@@ -824,7 +832,7 @@ public class NumberFieldTypeTests extends FieldTypeTestCase {
             ScriptCompiler.NONE,
             false,
             true,
-            Version.CURRENT,
+            IndexVersion.CURRENT,
             null
         ).build(MapperBuilderContext.root(false)).fieldType();
         assertEquals(List.of(3), fetchSourceValue(mapper, 3.14));
@@ -837,7 +845,7 @@ public class NumberFieldTypeTests extends FieldTypeTestCase {
             ScriptCompiler.NONE,
             false,
             true,
-            Version.CURRENT,
+            IndexVersion.CURRENT,
             null
         ).nullValue(2.71f).build(MapperBuilderContext.root(false)).fieldType();
         assertEquals(List.of(2.71f), fetchSourceValue(nullValueMapper, ""));
@@ -851,7 +859,7 @@ public class NumberFieldTypeTests extends FieldTypeTestCase {
             ScriptCompiler.NONE,
             false,
             true,
-            Version.CURRENT,
+            IndexVersion.CURRENT,
             null
         ).build(MapperBuilderContext.root(false)).fieldType();
         /*

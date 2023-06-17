@@ -18,7 +18,7 @@ import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.index.IndexMode;
 import org.elasticsearch.index.IndexSettings;
-import org.elasticsearch.index.codec.bloomfilter.ES85BloomFilterPostingsFormat;
+import org.elasticsearch.index.codec.bloomfilter.ES87BloomFilterPostingsFormat;
 import org.elasticsearch.index.codec.tsdb.ES87TSDBDocValuesFormat;
 import org.elasticsearch.index.mapper.IdFieldMapper;
 import org.elasticsearch.index.mapper.MappedFieldType;
@@ -41,7 +41,7 @@ public class PerFieldMapperCodec extends Lucene95Codec {
 
     private final MapperService mapperService;
     private final DocValuesFormat docValuesFormat = new Lucene90DocValuesFormat();
-    private final ES85BloomFilterPostingsFormat bloomFilterPostingsFormat;
+    private final ES87BloomFilterPostingsFormat bloomFilterPostingsFormat;
     private final ES87TSDBDocValuesFormat tsdbDocValuesFormat;
 
     static {
@@ -52,7 +52,7 @@ public class PerFieldMapperCodec extends Lucene95Codec {
     public PerFieldMapperCodec(Mode compressionMode, MapperService mapperService, BigArrays bigArrays) {
         super(compressionMode);
         this.mapperService = mapperService;
-        this.bloomFilterPostingsFormat = new ES85BloomFilterPostingsFormat(bigArrays, this::internalGetPostingsFormatForField);
+        this.bloomFilterPostingsFormat = new ES87BloomFilterPostingsFormat(bigArrays, this::internalGetPostingsFormatForField);
         this.tsdbDocValuesFormat = new ES87TSDBDocValuesFormat();
     }
 
@@ -107,23 +107,24 @@ public class PerFieldMapperCodec extends Lucene95Codec {
         return docValuesFormat;
     }
 
-    private boolean useTSDBDocValuesFormat(final String field) {
-        return IndexSettings.isTimeSeriesModeEnabled()
+    boolean useTSDBDocValuesFormat(final String field) {
+        return mapperService.getIndexSettings().isES87TSDBCodecEnabled()
             && isTimeSeriesModeIndex()
             && isNotSpecialField(field)
-            && (isCounterMetricType(field) || isTimestampField(field));
+            && (isCounterOrGaugeMetricType(field) || isTimestampField(field));
     }
 
     private boolean isTimeSeriesModeIndex() {
         return IndexMode.TIME_SERIES.equals(mapperService.getIndexSettings().getMode());
     }
 
-    private boolean isCounterMetricType(String field) {
+    private boolean isCounterOrGaugeMetricType(String field) {
         if (mapperService != null) {
             final MappingLookup mappingLookup = mapperService.mappingLookup();
             if (mappingLookup.getMapper(field) instanceof NumberFieldMapper) {
                 final MappedFieldType fieldType = mappingLookup.getFieldType(field);
-                return TimeSeriesParams.MetricType.COUNTER.equals(fieldType.getMetricType());
+                return TimeSeriesParams.MetricType.COUNTER.equals(fieldType.getMetricType())
+                    || TimeSeriesParams.MetricType.GAUGE.equals(fieldType.getMetricType());
             }
         }
         return false;

@@ -23,10 +23,12 @@ import org.elasticsearch.action.termvectors.MultiTermVectorsRequest;
 import org.elasticsearch.action.termvectors.MultiTermVectorsResponse;
 import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
+import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.compress.CompressedXContent;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.regex.Regex;
+import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.IndexScopedSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.settings.SettingsModule;
@@ -40,10 +42,14 @@ import org.elasticsearch.index.analysis.IndexAnalyzers;
 import org.elasticsearch.index.cache.bitset.BitsetFilterCache;
 import org.elasticsearch.index.fielddata.IndexFieldDataCache;
 import org.elasticsearch.index.fielddata.IndexFieldDataService;
+import org.elasticsearch.index.mapper.DateFieldMapper;
 import org.elasticsearch.index.mapper.MapperRegistry;
 import org.elasticsearch.index.mapper.MapperService;
+import org.elasticsearch.index.query.CoordinatorRewriteContext;
 import org.elasticsearch.index.query.SearchExecutionContext;
+import org.elasticsearch.index.shard.IndexLongFieldRange;
 import org.elasticsearch.index.shard.ShardId;
+import org.elasticsearch.index.shard.ShardLongFieldRange;
 import org.elasticsearch.index.similarity.SimilarityService;
 import org.elasticsearch.indices.IndicesModule;
 import org.elasticsearch.indices.analysis.AnalysisModule;
@@ -65,6 +71,8 @@ import org.elasticsearch.script.ScriptEngine;
 import org.elasticsearch.script.ScriptModule;
 import org.elasticsearch.script.ScriptService;
 import org.elasticsearch.search.SearchModule;
+import org.elasticsearch.tasks.TaskManager;
+import org.elasticsearch.threadpool.TestThreadPool;
 import org.elasticsearch.xcontent.NamedXContentRegistry;
 import org.elasticsearch.xcontent.XContentParserConfiguration;
 import org.junit.After;
@@ -162,6 +170,8 @@ public abstract class AbstractBuilderTestCase extends ESTestCase {
         return Collections.emptyList();
     }
 
+    private TestThreadPool testThreadPool;
+
     /**
      * Allows additional plugins other than the required `TestGeoShapeFieldMapperPlugin`
      * Could probably be removed when dependencies against geo_shape is decoupled
@@ -257,12 +267,17 @@ public abstract class AbstractBuilderTestCase extends ESTestCase {
 
         serviceHolder.clientInvocationHandler.delegate = this;
         serviceHolderWithNoType.clientInvocationHandler.delegate = this;
+
+        testThreadPool = new TestThreadPool(getTestName());
+        serviceHolder.clientInvocationHandler.testThreadPool = testThreadPool;
+        serviceHolderWithNoType.clientInvocationHandler.testThreadPool = testThreadPool;
     }
 
     @After
     public void afterTest() {
         serviceHolder.clientInvocationHandler.delegate = null;
         serviceHolderWithNoType.clientInvocationHandler.delegate = null;
+        testThreadPool.shutdown();
     }
 
     /**
@@ -273,10 +288,31 @@ public abstract class AbstractBuilderTestCase extends ESTestCase {
     }
 
     /**
-     * Override this to handle {@link Client#get(GetRequest)} calls from parsers / builders
+     * Override this to handle {@link Client#multiTermVectors(MultiTermVectorsRequest, ActionListener)}
+     * calls from parsers / builders
      */
     protected MultiTermVectorsResponse executeMultiTermVectors(MultiTermVectorsRequest mtvRequest) {
         throw new UnsupportedOperationException("this test can't handle MultiTermVector requests");
+    }
+
+    /**
+     * Can the test simulate this {@code Method}.
+     * If this function returns true {@link #simulateMethod(Method, Object[])}
+     * should be implemented provide the expected response.
+     *
+     * @param method The method being proxied. In practice method will represent a client call.
+     * @param args Method arguments
+     * @return True if simulating the method call is supported
+     */
+    protected boolean canSimulateMethod(Method method, Object[] args) throws NoSuchMethodException {
+        return false;
+    }
+
+    /**
+     * Override this to simulate client calls.
+     */
+    protected Object simulateMethod(Method method, Object[] args) {
+        throw new UnsupportedOperationException("this test can't simulate method [" + method.getName() + "]");
     }
 
     /**
@@ -284,6 +320,14 @@ public abstract class AbstractBuilderTestCase extends ESTestCase {
      */
     protected static SearchExecutionContext createSearchExecutionContext(IndexSearcher searcher) {
         return serviceHolder.createShardContext(searcher);
+    }
+
+    protected static CoordinatorRewriteContext createCoordinatorRewriteContext(
+        DateFieldMapper.DateFieldType dateFieldType,
+        long min,
+        long max
+    ) {
+        return serviceHolder.createCoordinatorContext(dateFieldType, min, max);
     }
 
     /**
@@ -302,6 +346,7 @@ public abstract class AbstractBuilderTestCase extends ESTestCase {
 
     private static class ClientInvocationHandler implements InvocationHandler {
         AbstractBuilderTestCase delegate;
+        TestThreadPool testThreadPool;
 
         @Override
         public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
@@ -324,6 +369,10 @@ public abstract class AbstractBuilderTestCase extends ESTestCase {
                 };
             } else if (method.equals(Object.class.getMethod("toString"))) {
                 return "MockClient";
+            } else if (method.equals(Client.class.getMethod("threadPool"))) {
+                return testThreadPool;
+            } else if (delegate.canSimulateMethod(method, args)) {
+                return delegate.simulateMethod(method, args);
             }
             throw new UnsupportedOperationException("this test can't handle calls to: " + method);
         }
@@ -353,14 +402,18 @@ public abstract class AbstractBuilderTestCase extends ESTestCase {
             boolean registerType
         ) throws IOException {
             this.nowInMillis = nowInMillis;
-            Environment env = InternalSettingsPreparer.prepareEnvironment(
-                nodeSettings,
-                emptyMap(),
-                null,
-                () -> { throw new AssertionError("node.name must be set"); }
-            );
+            Environment env = InternalSettingsPreparer.prepareEnvironment(nodeSettings, emptyMap(), null, () -> {
+                throw new AssertionError("node.name must be set");
+            });
             PluginsService pluginsService;
             pluginsService = new MockPluginsService(nodeSettings, env, plugins);
+
+            ClusterService clusterService = new ClusterService(
+                Settings.EMPTY,
+                new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS),
+                null,
+                (TaskManager) null
+            );
 
             client = (Client) Proxy.newProxyInstance(
                 Client.class.getClassLoader(),
@@ -397,6 +450,7 @@ public abstract class AbstractBuilderTestCase extends ESTestCase {
             similarityService = new SimilarityService(idxSettings, null, Collections.emptyMap());
             MapperRegistry mapperRegistry = indicesModule.getMapperRegistry();
             mapperService = new MapperService(
+                clusterService,
                 idxSettings,
                 indexAnalyzers,
                 parserConfiguration,
@@ -514,6 +568,16 @@ public abstract class AbstractBuilderTestCase extends ESTestCase {
                 () -> true,
                 null,
                 emptyMap()
+            );
+        }
+
+        CoordinatorRewriteContext createCoordinatorContext(DateFieldMapper.DateFieldType dateFieldType, long min, long max) {
+            return new CoordinatorRewriteContext(
+                parserConfiguration,
+                this.client,
+                () -> nowInMillis,
+                IndexLongFieldRange.NO_SHARDS.extendWithShardRange(0, 1, ShardLongFieldRange.of(min, max)),
+                dateFieldType
             );
         }
 

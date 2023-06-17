@@ -181,8 +181,6 @@ public class IndexLifecycle extends Plugin implements ActionPlugin, HealthPlugin
             LifecycleSettings.LIFECYCLE_POLL_INTERVAL_SETTING,
             LifecycleSettings.LIFECYCLE_NAME_SETTING,
             LifecycleSettings.LIFECYCLE_INDEXING_COMPLETE_SETTING,
-            LifecycleSettings.LIFECYCLE_ORIGINATION_DATE_SETTING,
-            LifecycleSettings.LIFECYCLE_PARSE_ORIGINATION_DATE_SETTING,
             LifecycleSettings.LIFECYCLE_HISTORY_INDEX_ENABLED_SETTING,
             LifecycleSettings.LIFECYCLE_STEP_MASTER_TIMEOUT_SETTING,
             LifecycleSettings.LIFECYCLE_STEP_WAIT_TIME_THRESHOLD_SETTING,
@@ -275,7 +273,16 @@ public class IndexLifecycle extends Plugin implements ActionPlugin, HealthPlugin
         );
         snapshotRetentionService.get().init(clusterService);
         components.addAll(Arrays.asList(snapshotLifecycleService.get(), snapshotHistoryStore.get(), snapshotRetentionService.get()));
-        ilmHealthIndicatorService.set(new IlmHealthIndicatorService(clusterService));
+        ilmHealthIndicatorService.set(
+            new IlmHealthIndicatorService(
+                clusterService,
+                new IlmHealthIndicatorService.StagnatingIndicesFinder(
+                    clusterService,
+                    IlmHealthIndicatorService.ILM_RULE_EVALUATOR,
+                    System::currentTimeMillis
+                )
+            )
+        );
         slmHealthIndicatorService.set(new SlmHealthIndicatorService(clusterService));
         reservedLifecycleAction.set(new ReservedLifecycleAction(xContentRegistry, client, XPackPlugin.getSharedLicenseState()));
 

@@ -128,15 +128,11 @@ public class InternalGeoLineTests extends InternalAggregationTestCase<InternalGe
             }
         }
 
-        new PathArraySorter(finalList, finalSortVals, reduced.sortOrder()).sort();
+        PathArraySorter.forOrder(reduced.sortOrder()).apply(finalList, finalSortVals).sort();
 
         // cap to max length
         long[] finalCappedPoints = Arrays.copyOf(finalList, Math.min(reduced.size(), mergedLength));
         double[] finalCappedSortVals = Arrays.copyOf(finalSortVals, Math.min(reduced.size(), mergedLength));
-
-        if (SortOrder.DESC.equals(reduced.sortOrder())) {
-            new PathArraySorter(finalCappedPoints, finalCappedSortVals, SortOrder.ASC).sort();
-        }
 
         assertArrayEquals(finalCappedSortVals, reduced.sortVals(), 0d);
         assertArrayEquals(finalCappedPoints, reduced.line());
