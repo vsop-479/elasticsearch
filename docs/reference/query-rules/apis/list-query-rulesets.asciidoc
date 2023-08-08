@@ -1,0 +1,90 @@
+[role="xpack"]
+[[list-query-rulesets]]
+=== List query rulesets
+
+preview::[]
+
+++++
+<titleabbrev>List query rulesets</titleabbrev>
+++++
+
+Returns information about all stored query rulesets.
+Summary information on the number of rules per ruleset will be returned, and full details can be returned with the <<get-query-ruleset>> command.
+
+[[list-query-rules-request]]
+==== {api-request-title}
+
+`GET _query_rules/`
+
+[[list-query-rules-prereq]]
+==== {api-prereq-title}
+
+Requires the `manage_search_query_rules` privilege.
+
+[[list-query-rules-path-params]]
+==== {api-path-parms-title}
+
+`size`::
+(Optional, integer) Maximum number of results to retrieve.
+
+`from`::
+(Optional, integer) The offset from the first result to fetch.
+
+[[list-query-rules-example]]
+==== {api-examples-title}
+
+The following example lists all configured query rulesets:
+
+[source,console]
+----
+GET _query_rules/
+----
+// TEST[skip:TBD]
+
+The following example lists the first three query rulesets:
+
+[source,console]
+----
+GET _query_rules/?from=0&size=3
+----
+// TEST[skip:TBD]
+
+A sample response:
+
+[source,console-result]
+----
+{
+    "count": 4,
+    "results": [
+        {
+            "ruleset_id": "ruleset-1",
+            "rule_total_count": 10,
+            "rule_criteria_types_counts: {
+                "exact": 5,
+                "fuzzy": 5
+            }
+        },
+        {
+            "ruleset_id": "ruleset-2",
+            "rule_total_count": 15,
+            "rule_criteria_types_counts: {
+                "exact": 5,
+                "fuzzy": 10,
+                "gt": 4
+            }
+        },
+        {
+            "ruleset_id": "ruleset-3",
+            "rule_total_count": 5,
+            "rule_criteria_types_counts: {
+                "exact": 1,
+                "contains": 4
+            }
+        }
+    ]
+}
+----
+// TEST[skip:TBD]
+
+[NOTE]
+The counts in `rule_criteria_types_counts` may be larger than the value of `rule_total_count`, because a rule may have multiple criteria.
