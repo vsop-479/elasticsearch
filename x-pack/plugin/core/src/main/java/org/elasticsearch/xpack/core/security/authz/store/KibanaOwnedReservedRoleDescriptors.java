@@ -12,7 +12,6 @@ import org.elasticsearch.action.admin.indices.delete.DeleteIndexAction;
 import org.elasticsearch.action.admin.indices.mapping.put.PutMappingAction;
 import org.elasticsearch.action.admin.indices.rollover.RolloverAction;
 import org.elasticsearch.action.admin.indices.settings.put.UpdateSettingsAction;
-import org.elasticsearch.transport.TcpTransport;
 import org.elasticsearch.xpack.core.monitoring.action.MonitoringBulkAction;
 import org.elasticsearch.xpack.core.security.action.apikey.InvalidateApiKeyAction;
 import org.elasticsearch.xpack.core.security.action.privilege.GetBuiltinPrivilegesAction;
@@ -282,13 +281,12 @@ class KibanaOwnedReservedRoleDescriptors {
                 RoleDescriptor.IndicesPrivileges.builder()
                     .indices("logs-ti_*_latest.*")
                     .privileges(
-                        // Require "create_index", "delete_index", "read", "index", "delete", IndicesAliasesAction.NAME, and
-                        // UpdateSettingsAction.NAME for transform
                         "create_index",
                         "delete_index",
                         "read",
                         "index",
                         "delete",
+                        "manage",
                         IndicesAliasesAction.NAME,
                         UpdateSettingsAction.NAME
                     )
@@ -348,15 +346,13 @@ class KibanaOwnedReservedRoleDescriptors {
             null,
             MetadataUtils.DEFAULT_RESERVED_METADATA,
             null,
-            TcpTransport.isUntrustedRemoteClusterEnabled()
-                ? new RoleDescriptor.RemoteIndicesPrivileges[] {
-                    getRemoteIndicesReadPrivileges(".monitoring-*"),
-                    getRemoteIndicesReadPrivileges("apm-*"),
-                    getRemoteIndicesReadPrivileges("logs-apm.*"),
-                    getRemoteIndicesReadPrivileges("metrics-apm.*"),
-                    getRemoteIndicesReadPrivileges("traces-apm.*"),
-                    getRemoteIndicesReadPrivileges("traces-apm-*") }
-                : null,
+            new RoleDescriptor.RemoteIndicesPrivileges[] {
+                getRemoteIndicesReadPrivileges(".monitoring-*"),
+                getRemoteIndicesReadPrivileges("apm-*"),
+                getRemoteIndicesReadPrivileges("logs-apm.*"),
+                getRemoteIndicesReadPrivileges("metrics-apm.*"),
+                getRemoteIndicesReadPrivileges("traces-apm.*"),
+                getRemoteIndicesReadPrivileges("traces-apm-*") },
             null
         );
     }

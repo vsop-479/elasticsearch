@@ -118,10 +118,9 @@ public abstract class TransportMasterNodeAction<Request extends MasterNodeReques
 
     private void executeMasterOperation(Task task, Request request, ClusterState state, ActionListener<Response> listener)
         throws Exception {
-        if (task instanceof CancellableTask && ((CancellableTask) task).isCancelled()) {
+        if (task instanceof CancellableTask cancellableTask && cancellableTask.isCancelled()) {
             throw new TaskCancelledException("Task was cancelled");
         }
-
         masterOperation(task, request, state, listener);
     }
 
@@ -169,7 +168,8 @@ public abstract class TransportMasterNodeAction<Request extends MasterNodeReques
         if (task != null) {
             request.setParentTask(clusterService.localNode().getId(), task.getId());
         }
-        new AsyncSingleAction(task, request, listener).doStart(state);
+        request.incRef();
+        new AsyncSingleAction(task, request, ActionListener.runBefore(listener, request::decRef)).doStart(state);
     }
 
     class AsyncSingleAction {

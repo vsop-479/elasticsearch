@@ -119,7 +119,7 @@ public abstract class TransportBroadcastByNodeAction<
 
         transportService.registerRequestHandler(
             transportNodeBroadcastAction,
-            executor,
+            this.executor,
             false,
             canTripCircuitBreaker,
             NodeRequest::new,
@@ -228,7 +228,8 @@ public abstract class TransportBroadcastByNodeAction<
     @Override
     protected void doExecute(Task task, Request request, ActionListener<Response> listener) {
         // workaround for https://github.com/elastic/elasticsearch/issues/97916 - TODO remove this when we can
-        executor.execute(ActionRunnable.wrap(listener, l -> doExecuteForked(task, request, listener)));
+        request.incRef();
+        executor.execute(ActionRunnable.wrapReleasing(listener, request::decRef, l -> doExecuteForked(task, request, listener)));
     }
 
     private void doExecuteForked(Task task, Request request, ActionListener<Response> listener) {
@@ -308,13 +309,17 @@ public abstract class TransportBroadcastByNodeAction<
                     nodeRequest.setParentTask(clusterService.localNode().getId(), task.getId());
                 }
 
-                transportService.sendRequest(
-                    node,
-                    transportNodeBroadcastAction,
-                    nodeRequest,
-                    transportRequestOptions,
-                    new ActionListenerResponseHandler<>(listener, nodeResponseReader, executor)
-                );
+                try {
+                    transportService.sendRequest(
+                        node,
+                        transportNodeBroadcastAction,
+                        nodeRequest,
+                        transportRequestOptions,
+                        new ActionListenerResponseHandler<>(listener, nodeResponseReader, executor)
+                    );
+                } finally {
+                    nodeRequest.decRef();
+                }
             }
 
             @Override
@@ -451,7 +456,7 @@ public abstract class TransportBroadcastByNodeAction<
 
             @Override
             public String toString() {
-                return actionName;
+                return transportNodeBroadcastAction;
             }
         }.run(task, shards.iterator(), listener);
     }
@@ -464,11 +469,12 @@ public abstract class TransportBroadcastByNodeAction<
         NodeRequest(StreamInput in) throws IOException {
             super(in);
             indicesLevelRequest = readRequestFrom(in);
-            shards = in.readList(ShardRouting::new);
+            shards = in.readCollectionAsList(ShardRouting::new);
             nodeId = in.readString();
         }
 
         NodeRequest(Request indicesLevelRequest, List<ShardRouting> shards, String nodeId) {
+            indicesLevelRequest.incRef();
             this.indicesLevelRequest = indicesLevelRequest;
             this.shards = shards;
             this.nodeId = nodeId;
@@ -498,15 +504,41 @@ public abstract class TransportBroadcastByNodeAction<
 
         @Override
         public void writeTo(StreamOutput out) throws IOException {
+            assert indicesLevelRequest.hasReferences();
             super.writeTo(out);
             indicesLevelRequest.writeTo(out);
-            out.writeList(shards);
+            out.writeCollection(shards);
             out.writeString(nodeId);
         }
 
         @Override
         public Task createTask(long id, String type, String action, TaskId parentTaskId, Map<String, String> headers) {
             return indicesLevelRequest.createTask(id, type, action, parentTaskId, headers);
+        }
+
+        @Override
+        public void incRef() {
+            indicesLevelRequest.incRef();
+        }
+
+        @Override
+        public boolean tryIncRef() {
+            return indicesLevelRequest.tryIncRef();
+        }
+
+        @Override
+        public boolean decRef() {
+            return indicesLevelRequest.decRef();
+        }
+
+        @Override
+        public boolean hasReferences() {
+            return indicesLevelRequest.hasReferences();
+        }
+
+        @Override
+        public String toString() {
+            return "[" + transportNodeBroadcastAction + "][" + nodeId + "][" + indicesLevelRequest + "]";
         }
     }
 
@@ -520,9 +552,9 @@ public abstract class TransportBroadcastByNodeAction<
             super(in);
             nodeId = in.readString();
             totalShards = in.readVInt();
-            results = in.readList((stream) -> stream.readBoolean() ? readShardResult(stream) : null);
+            results = in.readCollectionAsList((stream) -> stream.readBoolean() ? readShardResult(stream) : null);
             if (in.readBoolean()) {
-                exceptions = in.readList(BroadcastShardOperationFailedException::new);
+                exceptions = in.readCollectionAsList(BroadcastShardOperationFailedException::new);
             } else {
                 exceptions = null;
             }
@@ -567,7 +599,7 @@ public abstract class TransportBroadcastByNodeAction<
             out.writeCollection(results, StreamOutput::writeOptionalWriteable);
             out.writeBoolean(exceptions != null);
             if (exceptions != null) {
-                out.writeList(exceptions);
+                out.writeCollection(exceptions);
             }
         }
     }
