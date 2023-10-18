@@ -41,13 +41,11 @@ public class TransportNodesHotThreadsAction extends TransportNodesAction<
     ) {
         super(
             NodesHotThreadsAction.NAME,
-            threadPool,
             clusterService,
             transportService,
             actionFilters,
-            NodesHotThreadsRequest::new,
             NodeRequest::new,
-            ThreadPool.Names.GENERIC
+            threadPool.executor(ThreadPool.Names.GENERIC)
         );
     }
 
@@ -87,6 +85,7 @@ public class TransportNodesHotThreadsAction extends TransportNodesAction<
 
     public static class NodeRequest extends TransportRequest {
 
+        // TODO don't wrap the whole top-level request, it contains heavy and irrelevant DiscoveryNode things; see #100878
         NodesHotThreadsRequest request;
 
         public NodeRequest(StreamInput in) throws IOException {

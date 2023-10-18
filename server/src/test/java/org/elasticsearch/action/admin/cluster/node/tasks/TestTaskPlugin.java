@@ -263,13 +263,11 @@ public class TestTaskPlugin extends Plugin implements ActionPlugin, NetworkPlugi
         public TransportTestTaskAction(ThreadPool threadPool, ClusterService clusterService, TransportService transportService) {
             super(
                 TestTaskAction.NAME,
-                threadPool,
                 clusterService,
                 transportService,
                 new ActionFilters(new HashSet<>()),
-                NodesRequest::new,
                 NodeRequest::new,
-                ThreadPool.Names.GENERIC
+                threadPool.executor(ThreadPool.Names.GENERIC)
             );
         }
 
@@ -404,7 +402,7 @@ public class TestTaskPlugin extends Plugin implements ActionPlugin, NetworkPlugi
                 UnblockTestTasksRequest::new,
                 UnblockTestTasksResponse::new,
                 UnblockTestTaskResponse::new,
-                ThreadPool.Names.MANAGEMENT
+                transportService.getThreadPool().executor(ThreadPool.Names.MANAGEMENT)
             );
         }
 

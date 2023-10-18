@@ -11,11 +11,11 @@ package org.elasticsearch.recovery;
 import org.apache.lucene.index.IndexFileNames;
 import org.apache.lucene.tests.util.English;
 import org.elasticsearch.action.ActionFuture;
+import org.elasticsearch.action.DocWriteResponse;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse;
 import org.elasticsearch.action.admin.cluster.reroute.ClusterRerouteResponse;
 import org.elasticsearch.action.admin.indices.stats.ShardStats;
 import org.elasticsearch.action.index.IndexRequestBuilder;
-import org.elasticsearch.action.index.IndexResponse;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.action.support.WriteRequest;
 import org.elasticsearch.client.internal.Client;
@@ -485,7 +485,7 @@ public class RelocationIT extends ESIntegTestCase {
         for (int i = 0; i < searchThreads.length; i++) {
             searchThreads[i] = new Thread(() -> {
                 while (stopped.get() == false) {
-                    assertNoFailures(client().prepareSearch("test").setRequestCache(false).get());
+                    assertNoFailures(client().prepareSearch("test").setRequestCache(false));
                 }
             });
             searchThreads[i].start();
@@ -500,8 +500,7 @@ public class RelocationIT extends ESIntegTestCase {
             docs[i] = client().prepareIndex("test").setId(id).setSource("field1", English.intToEnglish(i));
         }
         indexRandom(true, docs);
-        SearchResponse countResponse = client().prepareSearch("test").get();
-        assertHitCount(countResponse, numDocs);
+        assertHitCount(client().prepareSearch("test"), numDocs);
 
         logger.info(" --> moving index to new nodes");
         updateIndexSettings(
@@ -603,7 +602,7 @@ public class RelocationIT extends ESIntegTestCase {
         logger.info("--> flush so we have an actual index");
         indicesAdmin().prepareFlush().execute().actionGet();
         logger.info("--> index more docs so we have something in the translog");
-        final List<ActionFuture<IndexResponse>> pendingIndexResponses = new ArrayList<>();
+        final List<ActionFuture<DocWriteResponse>> pendingIndexResponses = new ArrayList<>();
         for (int i = 10; i < 20; i++) {
             pendingIndexResponses.add(
                 client().prepareIndex("test")
