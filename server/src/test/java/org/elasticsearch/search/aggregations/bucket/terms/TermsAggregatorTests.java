@@ -22,14 +22,20 @@ import org.apache.lucene.document.StringField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.IndexableField;
+import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.BooleanClause.Occur;
 import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.Collector;
 import org.apache.lucene.search.FieldExistsQuery;
+import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
+import org.apache.lucene.search.TotalHitCountCollectorManager;
 import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.tests.index.RandomIndexWriter;
@@ -113,6 +119,7 @@ import org.elasticsearch.search.aggregations.support.AggregationInspectionHelper
 import org.elasticsearch.search.aggregations.support.CoreValuesSourceType;
 import org.elasticsearch.search.aggregations.support.ValueType;
 import org.elasticsearch.search.aggregations.support.ValuesSourceType;
+import org.elasticsearch.search.internal.ContextIndexSearcher;
 import org.elasticsearch.search.lookup.SearchLookup;
 import org.elasticsearch.search.runtime.StringScriptFieldTermQuery;
 import org.elasticsearch.search.sort.FieldSortBuilder;
@@ -132,6 +139,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -208,6 +217,95 @@ public class TermsAggregatorTests extends AggregatorTestCase {
             CoreValuesSourceType.DATE,
             CoreValuesSourceType.BOOLEAN
         );
+    }
+
+    public void testConcurrentTermsAgg() throws IOException {
+        MappedFieldType fieldType = new KeywordFieldMapper.KeywordFieldType("name", true, true, Collections.emptyMap());
+
+        ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(randomIntBetween(2, 5));
+        Directory directory = newDirectory();
+        RandomIndexWriter iw = new RandomIndexWriter(
+            random(),
+            directory,
+            new IndexWriterConfig().setMergePolicy(NoMergePolicy.INSTANCE)
+        );
+
+//        IndexWriter iw  = new IndexWriter(directory, new IndexWriterConfig().setMergePolicy(NoMergePolicy.INSTANCE));
+
+        iw.addDocument(doc(fieldType, "nini"));
+        iw.addDocument(doc(fieldType, "yiyi"));
+        iw.addDocument(doc(fieldType, "vivi"));
+        iw.flush();
+        iw.addDocument(doc(fieldType, "kiki"));
+        iw.addDocument(doc(fieldType, "nini"));
+        iw.addDocument(doc(fieldType, "qiqi"));
+        iw.addDocument(doc(fieldType, "zizi"));
+        iw.flush();
+        iw.addDocument(doc(fieldType, "qiqi"));
+        iw.addDocument(doc(fieldType, "vivi"));
+        iw.addDocument(doc(fieldType, "nini"));
+        iw.addDocument(doc(fieldType, "oioi"));
+        iw.flush();
+        iw.commit();
+
+        DirectoryReader directoryReader = DirectoryReader.open(directory);
+        ContextIndexSearcher searcher = new ContextIndexSearcher(
+            directoryReader,
+            IndexSearcher.getDefaultSimilarity(),
+            IndexSearcher.getDefaultQueryCache(),
+            IndexSearcher.getDefaultQueryCachingPolicy(),
+            randomBoolean(),
+            null,
+            // create as many slices as possible
+            Integer.MAX_VALUE,
+            1
+        );
+
+        TermsAggregationBuilder aggregationBuilder = new TermsAggregationBuilder("names").executionHint(
+            TermsAggregatorFactory.ExecutionMode.GLOBAL_ORDINALS.toString()
+        ).field("name");
+
+        MatchAllDocsQuery matchAllDocsQuery = new MatchAllDocsQuery();
+        AggregationContext context = createAggregationContext(directoryReader, matchAllDocsQuery, fieldType);
+        Aggregator aggregator = createAggregator(aggregationBuilder, context);
+        aggregator.preCollection();
+        Collector collector = aggregator.asCollector();
+
+        searcher.search(matchAllDocsQuery, collector);
+        System.out.println("");
+    }
+
+    public Document getDoc(String name){
+        Document document = new Document();
+        document.add(new StringField("name", name, Field.Store.NO));
+        return document;
+    }
+
+    public void testConcurrent() throws Exception {
+        MappedFieldType fieldType = new KeywordFieldMapper.KeywordFieldType("name", true, true, Collections.emptyMap());
+        TermsAggregationBuilder aggregationBuilder = new TermsAggregationBuilder("names").executionHint(
+            TermsAggregatorFactory.ExecutionMode.GLOBAL_ORDINALS.toString()
+        ).field("name");
+
+        testCase(iw -> {
+            iw.addDocument(doc(fieldType, "nini"));
+            iw.addDocument(doc(fieldType, "yiyi"));
+            iw.addDocument(doc(fieldType, "vivi"));
+            iw.flush();
+            iw.addDocument(doc(fieldType, "kiki"));
+            iw.addDocument(doc(fieldType, "nini"));
+            iw.addDocument(doc(fieldType, "qiqi"));
+            iw.addDocument(doc(fieldType, "zizi"));
+            iw.flush();
+            iw.addDocument(doc(fieldType, "qiqi"));
+            iw.addDocument(doc(fieldType, "vivi"));
+            iw.addDocument(doc(fieldType, "nini"));
+            iw.addDocument(doc(fieldType, "oioi"));
+            iw.flush();
+        }, (InternalTerms<?, ?> result) -> {
+            assertEquals("nini", result.getBuckets().get(0).getKeyAsString());
+            assertEquals(3L, result.getBuckets().get(0).getDocCount());
+        } , new AggTestConfig(aggregationBuilder, fieldType));
     }
 
     public void testUsesGlobalOrdinalsByDefault() throws Exception {

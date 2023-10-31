@@ -20,7 +20,6 @@ import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.action.support.SubscribableListener;
 import org.elasticsearch.common.ReferenceDocs;
 import org.elasticsearch.common.filesystem.FileSystemNatives;
-import org.elasticsearch.common.io.stream.InputStreamStreamInput;
 import org.elasticsearch.common.logging.LogConfigurator;
 import org.elasticsearch.common.network.IfConfig;
 import org.elasticsearch.common.settings.SecureSettings;
@@ -99,7 +98,7 @@ class Elasticsearch {
     private static Bootstrap initPhase1() {
         final PrintStream out = getStdout();
         final PrintStream err = getStderr();
-        final ServerArgs args;
+        ServerArgs args;
         try {
             initSecurityProperties();
 
@@ -119,13 +118,26 @@ class Elasticsearch {
             BootstrapInfo.init();
 
             // note that reading server args does *not* close System.in, as it will be read from later for shutdown notification
-            var in = new InputStreamStreamInput(System.in);
-            args = new ServerArgs(in);
+//            var in = new InputStreamStreamInput(System.in);
+//            args = new ServerArgs(in);
+            // for debug...
+            Settings settings = Settings.builder().put("path.home", "/Users/zhouhui/IdeaProjects/elasticsearch-fork/server").build();
+
+            Path confPath = Path.of("/Users/zhouhui/IdeaProjects/elasticsearch-fork/es0/config");
+            args = new ServerArgs(true, true, null, null, settings, confPath);
 
             // mostly just paths are used in phase 1, so secure settings are not needed
             Environment nodeEnv = new Environment(args.nodeSettings(), args.configDir());
 
-            BootstrapInfo.setConsole(ConsoleLoader.loadConsole(nodeEnv));
+            Settings.Builder output = Settings.builder();
+            output.put(nodeEnv.settings());
+            Path path = nodeEnv.configFile().resolve("elasticsearch.yml");
+            output.loadFromPath(path);
+            Settings finalSettings = output.build();
+            nodeEnv = new Environment(finalSettings, nodeEnv.configFile());
+
+            args = new ServerArgs(true, true, null, null, finalSettings, confPath);
+//            BootstrapInfo.setConsole(ConsoleLoader.loadConsole(nodeEnv));
 
             // DO NOT MOVE THIS
             // Logging must remain the last step of phase 1. Anything init steps needing logging should be in phase 2.

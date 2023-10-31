@@ -9,6 +9,7 @@
 package org.elasticsearch.search.aggregations;
 
 import org.apache.lucene.search.CollectorManager;
+import org.elasticsearch.search.aggregations.bucket.terms.GlobalOrdinalsStringTermsAggregator;
 
 import java.io.IOException;
 import java.util.ArrayList;

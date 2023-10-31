@@ -210,7 +210,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     // This setting is only registered on tests to force concurrent search even when segments contains very few documents.
     public static final Setting<Integer> MINIMUM_DOCS_PER_SLICE = Setting.intSetting(
         "search.minimum_docs_per_slice",
-        50_000,
+        1,
         1,
         Property.NodeScope
     );
@@ -224,7 +224,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
 
     public static final Setting<Boolean> QUERY_PHASE_PARALLEL_COLLECTION_ENABLED = Setting.boolSetting(
         "search.query_phase_parallel_collection_enabled",
-        false,
+        true,
         Property.NodeScope,
         Property.Dynamic
     );

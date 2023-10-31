@@ -13,25 +13,25 @@
 //// SecurityManager impl:
 //// Must have all permissions to properly perform access checks
 
-grant codeBase "${codebase.elasticsearch-secure-sm}" {
-  permission java.security.AllPermission;
-};
+//grant codeBase "${codebase.elasticsearch-secure-sm}" {
+ // permission java.security.AllPermission;
+//};
 
 //// Elasticsearch core:
 //// These are only allowed inside the server jar, not in plugins
-grant codeBase "${codebase.elasticsearch}" {
+//grant codeBase "${codebase.elasticsearch}" {
   // needed for loading plugins which may expect the context class loader to be set
-  permission java.lang.RuntimePermission "setContextClassLoader";
+  //permission java.lang.RuntimePermission "setContextClassLoader";
   // needed for the readiness service
-  permission java.net.SocketPermission "*", "listen, accept";
+  //permission java.net.SocketPermission "*", "listen, accept";
 
   // for module layer
-  permission java.lang.RuntimePermission "createClassLoader";
-  permission java.lang.RuntimePermission "getClassLoader";
+  //permission java.lang.RuntimePermission "createClassLoader";
+  //permission java.lang.RuntimePermission "getClassLoader";
 
   // for plugin api dynamic settings instances
-  permission java.lang.RuntimePermission "accessClassInPackage.jdk.internal.reflect";
-};
+  //permission java.lang.RuntimePermission "accessClassInPackage.jdk.internal.reflect";
+//};
 
 //// Very special jar permissions:
 //// These are dangerous permissions that we don't want to grant to everything.
@@ -52,20 +52,20 @@ grant codeBase "${codebase.lucene-misc}" {
   permission java.nio.file.LinkPermission "hard";
 };
 
-grant codeBase "${codebase.elasticsearch-plugin-classloader}" {
-  // needed to create the classloader which allows plugins to extend other plugins
-  permission java.lang.RuntimePermission "createClassLoader";
-};
+//grant codeBase "${codebase.elasticsearch-plugin-classloader}" {
+  //// needed to create the classloader which allows plugins to extend other plugins
+  //permission java.lang.RuntimePermission "createClassLoader";
+//};
 
-grant codeBase "${codebase.elasticsearch-core}" {
-  permission java.lang.RuntimePermission "createClassLoader";
-  permission java.lang.RuntimePermission "getClassLoader";
-};
+//grant codeBase "${codebase.elasticsearch-core}" {
+  //permission java.lang.RuntimePermission "createClassLoader";
+  //permission java.lang.RuntimePermission "getClassLoader";
+//};
 
-grant codeBase "${codebase.elasticsearch-cli}" {
+//grant codeBase "${codebase.elasticsearch-cli}" {
   // we don't actually use write, but it is needed to get the entire property map
-  permission java.util.PropertyPermission "*", "read,write";
-};
+  //permission java.util.PropertyPermission "*", "read,write";
+//};
 
 grant codeBase "${codebase.jna}" {
   // for registering native methods
@@ -76,16 +76,31 @@ grant codeBase "${codebase.log4j-api}" {
   permission java.lang.RuntimePermission "getClassLoader";
 };
 
-grant codeBase "${codebase.elasticsearch-preallocate}" {
+//grant codeBase "${codebase.elasticsearch-preallocate}" {
   // for registering native methods
-  permission java.lang.RuntimePermission "accessDeclaredMembers";
+  //permission java.lang.RuntimePermission "accessDeclaredMembers";
   // for accessing the file descriptor field in FileChannel
-  permission java.lang.reflect.ReflectPermission "suppressAccessChecks";
-};
+  //permission java.lang.reflect.ReflectPermission "suppressAccessChecks";
+//};
 
 //// Everything else:
 
 grant {
+// addd
+permission javax.management.MBeanTrustPermission "register";
+permission java.lang.RuntimePermission "createClassLoader";
+permission java.lang.RuntimePermission "getClassLoader";
+permission java.lang.RuntimePermission "setContextClassLoader";
+permission javax.management.MBeanServerPermission "createMBeanServer";
+permission javax.management.MBeanPermission "*", "registerMBean";
+permission javax.management.MBeanPermission "*", "queryNames";
+permission java.net.SocketPermission "*", "accept,resolve";
+permission java.net.SocketPermission "*", "connect,resolve";
+permission java.io.FilePermission "/Users/zhouhui/IdeaProjects/elasticsearch-fork/libs/-", "read";
+permission java.io.FilePermission "/Users/zhouhui/.gradle/-", "read";
+permission java.io.FilePermission "/Users/zhouhui/IdeaProjects/elasticsearch-fork/server/build/-", "read";
+permission java.util.PropertyPermission "es.logs.base_path", "read";
+
   // needed by vendored Guice
   permission java.lang.RuntimePermission "accessClassInPackage.jdk.internal.vm.annotation";
 
