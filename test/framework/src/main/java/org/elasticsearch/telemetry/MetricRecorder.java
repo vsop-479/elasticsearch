@@ -11,12 +11,12 @@ package org.elasticsearch.telemetry;
 import org.elasticsearch.core.Strings;
 import org.elasticsearch.telemetry.metric.Instrument;
 
-import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Container for registered Instruments (either {@link Instrument} or Otel's versions).
@@ -39,7 +39,7 @@ public class MetricRecorder<I> {
     ) {
         void register(String name, String description, String unit, I instrument) {
             assert registered.containsKey(name) == false
-                : Strings.format("unexpected [{}]: [{}][{}], already registered[{}]", name, description, unit, registered.get(name));
+                : Strings.format("unexpected [%s]: [%s][%s], already registered[%s]", name, description, unit, registered.get(name));
             registered.put(name, new Registration(name, description, unit));
             instruments.put(name, instrument);
             if (instrument instanceof Runnable callback) {
@@ -48,8 +48,8 @@ public class MetricRecorder<I> {
         }
 
         void call(String name, Measurement call) {
-            assert registered.containsKey(name) : Strings.format("call for unregistered metric [{}]: [{}]", name, call);
-            called.computeIfAbsent(Objects.requireNonNull(name), k -> new ArrayList<>()).add(call);
+            assert registered.containsKey(name) : Strings.format("call for unregistered metric [%s]: [%s]", name, call);
+            called.computeIfAbsent(Objects.requireNonNull(name), k -> new CopyOnWriteArrayList<>()).add(call);
         }
 
     }
@@ -60,9 +60,17 @@ public class MetricRecorder<I> {
     private final Map<InstrumentType, RegisteredMetric<I>> metrics;
 
     public MetricRecorder() {
-        metrics = new HashMap<>(InstrumentType.values().length);
+        metrics = new ConcurrentHashMap<>(InstrumentType.values().length);
         for (var instrument : InstrumentType.values()) {
-            metrics.put(instrument, new RegisteredMetric<>(new HashMap<>(), new HashMap<>(), new HashMap<>(), new ArrayList<>()));
+            metrics.put(
+                instrument,
+                new RegisteredMetric<>(
+                    new ConcurrentHashMap<>(),
+                    new ConcurrentHashMap<>(),
+                    new ConcurrentHashMap<>(),
+                    new CopyOnWriteArrayList<>()
+                )
+            );
         }
     }
 

@@ -17,7 +17,7 @@ import org.elasticsearch.compute.operator.EvalOperator.ExpressionEvaluator;
 import org.elasticsearch.core.Releasable;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.xpack.esql.evaluator.mapper.EvaluatorMapper;
-import org.elasticsearch.xpack.esql.planner.LocalExecutionPlanner;
+import org.elasticsearch.xpack.esql.planner.PlannerUtils;
 import org.elasticsearch.xpack.ql.expression.Expression;
 import org.elasticsearch.xpack.ql.expression.Literal;
 import org.elasticsearch.xpack.ql.expression.Nullability;
@@ -37,14 +37,13 @@ import java.util.stream.Stream;
 import static org.elasticsearch.common.logging.LoggerMessageFormat.format;
 import static org.elasticsearch.xpack.ql.type.DataTypes.NULL;
 
-public class Case extends ScalarFunction implements EvaluatorMapper {
+public final class Case extends ScalarFunction implements EvaluatorMapper {
     record Condition(Expression condition, Expression value) {}
 
     private final List<Condition> conditions;
     private final Expression elseValue;
     private DataType dataType;
 
-    @SuppressWarnings("this-escape")
     public Case(Source source, Expression first, List<Expression> rest) {
         super(source, Stream.concat(Stream.of(first), rest.stream()).toList());
         int conditionCount = children().size() / 2;
@@ -156,7 +155,7 @@ public class Case extends ScalarFunction implements EvaluatorMapper {
 
     @Override
     public ExpressionEvaluator.Factory toEvaluator(Function<Expression, ExpressionEvaluator.Factory> toEvaluator) {
-        ElementType resultType = LocalExecutionPlanner.toElementType(dataType());
+        ElementType resultType = PlannerUtils.toElementType(dataType());
         List<ConditionEvaluatorSupplier> conditionsFactories = conditions.stream()
             .map(c -> new ConditionEvaluatorSupplier(toEvaluator.apply(c.condition), toEvaluator.apply(c.value)))
             .toList();
@@ -213,7 +212,7 @@ public class Case extends ScalarFunction implements EvaluatorMapper {
         EvalOperator.ExpressionEvaluator elseVal
     ) implements EvalOperator.ExpressionEvaluator {
         @Override
-        public Block.Ref eval(Page page) {
+        public Block eval(Page page) {
             /*
              * We have to evaluate lazily so any errors or warnings that would be
              * produced by the right hand side are avoided. And so if anything
@@ -232,26 +231,25 @@ public class Case extends ScalarFunction implements EvaluatorMapper {
                     );
                     try (Releasable ignored = limited::releaseBlocks) {
                         for (ConditionEvaluator condition : conditions) {
-                            try (Block.Ref conditionRef = condition.condition.eval(limited)) {
-                                BooleanBlock b = (BooleanBlock) conditionRef.block();
+                            try (BooleanBlock b = (BooleanBlock) condition.condition.eval(limited)) {
                                 if (b.isNull(0)) {
                                     continue;
                                 }
                                 if (false == b.getBoolean(b.getFirstValueIndex(0))) {
                                     continue;
                                 }
-                                try (Block.Ref valueRef = condition.value.eval(limited)) {
-                                    result.copyFrom(valueRef.block(), 0, 1);
+                                try (Block values = condition.value.eval(limited)) {
+                                    result.copyFrom(values, 0, 1);
                                     continue position;
                                 }
                             }
                         }
-                        try (Block.Ref elseRef = elseVal.eval(limited)) {
-                            result.copyFrom(elseRef.block(), 0, 1);
+                        try (Block values = elseVal.eval(limited)) {
+                            result.copyFrom(values, 0, 1);
                         }
                     }
                 }
-                return Block.Ref.floating(result.build());
+                return result.build();
             }
         }
 

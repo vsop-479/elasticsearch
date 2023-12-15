@@ -11,6 +11,7 @@ import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.breaker.CircuitBreakingException;
 import org.elasticsearch.common.breaker.NoopCircuitBreaker;
+import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.util.BytesRefArray;
 import org.elasticsearch.compute.data.Block.MvOrdering;
@@ -18,6 +19,11 @@ import org.elasticsearch.compute.data.Block.MvOrdering;
 import java.util.BitSet;
 
 public class BlockFactory {
+    public static final String LOCAL_BREAKER_OVER_RESERVED_SIZE_SETTING = "esql.block_factory.local_breaker.over_reserved";
+    public static final ByteSizeValue LOCAL_BREAKER_OVER_RESERVED_DEFAULT_SIZE = ByteSizeValue.ofKb(4);
+
+    public static final String LOCAL_BREAKER_OVER_RESERVED_MAX_SIZE_SETTING = "esql.block_factory.local_breaker.max_over_reserved";
+    public static final ByteSizeValue LOCAL_BREAKER_OVER_RESERVED_DEFAULT_MAX_SIZE = ByteSizeValue.ofKb(16);
 
     private static final BlockFactory NON_BREAKING = BlockFactory.getInstance(
         new NoopCircuitBreaker("noop-esql-breaker"),
@@ -27,10 +33,16 @@ public class BlockFactory {
     private final CircuitBreaker breaker;
 
     private final BigArrays bigArrays;
+    private final BlockFactory parent;
 
     public BlockFactory(CircuitBreaker breaker, BigArrays bigArrays) {
+        this(breaker, bigArrays, null);
+    }
+
+    protected BlockFactory(CircuitBreaker breaker, BigArrays bigArrays, BlockFactory parent) {
         this.breaker = breaker;
         this.bigArrays = bigArrays;
+        this.parent = parent;
     }
 
     /**
@@ -52,6 +64,17 @@ public class BlockFactory {
     // For testing
     public BigArrays bigArrays() {
         return bigArrays;
+    }
+
+    protected BlockFactory parent() {
+        return parent != null ? parent : this;
+    }
+
+    public BlockFactory newChildFactory(LocalCircuitBreaker childBreaker) {
+        if (childBreaker.parentBreaker() != breaker) {
+            throw new IllegalStateException("Different parent breaker");
+        }
+        return new BlockFactory(childBreaker, bigArrays, this);
     }
 
     /**
@@ -109,6 +132,9 @@ public class BlockFactory {
         return new BooleanBlockBuilder(estimatedSize, this);
     }
 
+    /**
+     * Build a {@link BooleanVector.FixedBuilder} that never grows.
+     */
     public BooleanVector.FixedBuilder newBooleanVectorFixedBuilder(int size) {
         return new BooleanVectorFixedBuilder(size, this);
     }
@@ -172,6 +198,9 @@ public class BlockFactory {
         return new IntVectorBuilder(estimatedSize, this);
     }
 
+    /**
+     * Build a {@link IntVector.FixedBuilder} that never grows.
+     */
     public IntVector.FixedBuilder newIntVectorFixedBuilder(int size) {
         return new IntVectorFixedBuilder(size, this);
     }
@@ -236,7 +265,10 @@ public class BlockFactory {
         return new LongVectorBuilder(estimatedSize, this);
     }
 
-    LongVector.FixedBuilder newLongVectorFixedBuilder(int size) {
+    /**
+     * Build a {@link LongVector.FixedBuilder} that never grows.
+     */
+    public LongVector.FixedBuilder newLongVectorFixedBuilder(int size) {
         return new LongVectorFixedBuilder(size, this);
     }
 
@@ -286,7 +318,10 @@ public class BlockFactory {
         return new DoubleVectorBuilder(estimatedSize, this);
     }
 
-    DoubleVector.FixedBuilder newDoubleVectorFixedBuilder(int size) {
+    /**
+     * Build a {@link DoubleVector.FixedBuilder} that never grows.
+     */
+    public DoubleVector.FixedBuilder newDoubleVectorFixedBuilder(int size) {
         return new DoubleVectorFixedBuilder(size, this);
     }
 

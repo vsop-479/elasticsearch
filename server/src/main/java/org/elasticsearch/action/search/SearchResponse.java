@@ -95,11 +95,7 @@ public class SearchResponse extends ActionResponse implements ChunkedToXContentO
         scrollId = in.readOptionalString();
         tookInMillis = in.readVLong();
         skippedShards = in.readVInt();
-        if (in.getTransportVersion().onOrAfter(TransportVersions.V_7_10_0)) {
-            pointInTimeId = in.readOptionalString();
-        } else {
-            pointInTimeId = null;
-        }
+        pointInTimeId = in.readOptionalString();
     }
 
     public SearchResponse(
@@ -142,10 +138,6 @@ public class SearchResponse extends ActionResponse implements ChunkedToXContentO
 
     public RestStatus status() {
         return RestStatus.status(successfulShards, totalShards, shardFailures);
-    }
-
-    public SearchResponseSections getInternalResponse() {
-        return internalResponse;
     }
 
     /**
@@ -387,7 +379,7 @@ public class SearchResponse extends ActionResponse implements ChunkedToXContentO
                             }
                         } else if (token == Token.START_ARRAY) {
                             if (RestActions.FAILURES_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
-                                while ((token = parser.nextToken()) != Token.END_ARRAY) {
+                                while (parser.nextToken() != Token.END_ARRAY) {
                                     failures.add(ShardSearchFailure.fromXContent(parser));
                                 }
                             } else {
@@ -440,9 +432,7 @@ public class SearchResponse extends ActionResponse implements ChunkedToXContentO
         out.writeOptionalString(scrollId);
         out.writeVLong(tookInMillis);
         out.writeVInt(skippedShards);
-        if (out.getTransportVersion().onOrAfter(TransportVersions.V_7_10_0)) {
-            out.writeOptionalString(pointInTimeId);
-        }
+        out.writeOptionalString(pointInTimeId);
     }
 
     @Override
@@ -455,7 +445,7 @@ public class SearchResponse extends ActionResponse implements ChunkedToXContentO
      * and how many of them were skipped and further details in a Map of Cluster objects
      * (when doing a cross-cluster search).
      */
-    public static class Clusters implements ToXContentFragment, Writeable {
+    public static final class Clusters implements ToXContentFragment, Writeable {
 
         public static final Clusters EMPTY = new Clusters(0, 0, 0);
 
@@ -479,7 +469,7 @@ public class SearchResponse extends ActionResponse implements ChunkedToXContentO
         private final Map<String, Cluster> clusterInfo;
 
         // not Writeable since it is only needed on the (primary) CCS coordinator
-        private transient Boolean ccsMinimizeRoundtrips;
+        private final transient Boolean ccsMinimizeRoundtrips;
 
         /**
          * For use with cross-cluster searches.
@@ -985,7 +975,7 @@ public class SearchResponse extends ActionResponse implements ChunkedToXContentO
             private List<ShardSearchFailure> failures;
             private TimeValue took;
             private Boolean timedOut;
-            private Cluster original;
+            private final Cluster original;
 
             public Builder(Cluster copyFrom) {
                 this.original = copyFrom;
@@ -1167,7 +1157,7 @@ public class SearchResponse extends ActionResponse implements ChunkedToXContentO
                     }
                 } else if (token == Token.START_ARRAY) {
                     if (RestActions.FAILURES_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
-                        while ((token = parser.nextToken()) != Token.END_ARRAY) {
+                        while (parser.nextToken() != Token.END_ARRAY) {
                             failures.add(ShardSearchFailure.fromXContent(parser));
                         }
                     } else {

@@ -63,7 +63,19 @@ public class MockBlockFactory extends BlockFactory {
     }
 
     public MockBlockFactory(CircuitBreaker breaker, BigArrays bigArrays) {
-        super(breaker, bigArrays);
+        this(breaker, bigArrays, null);
+    }
+
+    protected MockBlockFactory(CircuitBreaker breaker, BigArrays bigArrays, BlockFactory parent) {
+        super(breaker, bigArrays, parent);
+    }
+
+    @Override
+    public BlockFactory newChildFactory(LocalCircuitBreaker childBreaker) {
+        if (childBreaker.parentBreaker() != breaker()) {
+            throw new IllegalStateException("Different parent breaker");
+        }
+        return new MockBlockFactory(childBreaker, bigArrays(), this);
     }
 
     @Override
@@ -245,7 +257,8 @@ public class MockBlockFactory extends BlockFactory {
         return b;
     }
 
-    LongVector.FixedBuilder newLongVectorFixedBuilder(int size) {
+    @Override
+    public LongVector.FixedBuilder newLongVectorFixedBuilder(int size) {
         var b = super.newLongVectorFixedBuilder(size);
         track(b, trackDetail());
         return b;
@@ -286,7 +299,8 @@ public class MockBlockFactory extends BlockFactory {
         return b;
     }
 
-    DoubleVector.FixedBuilder newDoubleVectorFixedBuilder(int size) {
+    @Override
+    public DoubleVector.FixedBuilder newDoubleVectorFixedBuilder(int size) {
         var b = super.newDoubleVectorFixedBuilder(size);
         track(b, trackDetail());
         return b;

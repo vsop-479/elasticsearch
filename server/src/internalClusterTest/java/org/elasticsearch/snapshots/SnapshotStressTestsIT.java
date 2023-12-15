@@ -8,6 +8,7 @@
 
 package org.elasticsearch.snapshots;
 
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.tests.util.LuceneTestCase;
@@ -16,7 +17,6 @@ import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ShardOperationFailedException;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthRequestBuilder;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse;
-import org.elasticsearch.action.admin.cluster.node.hotthreads.NodeHotThreads;
 import org.elasticsearch.action.admin.cluster.snapshots.create.CreateSnapshotRequestBuilder;
 import org.elasticsearch.action.admin.cluster.snapshots.delete.DeleteSnapshotRequestBuilder;
 import org.elasticsearch.action.admin.cluster.snapshots.restore.RestoreSnapshotRequestBuilder;
@@ -34,6 +34,7 @@ import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.Randomness;
+import org.elasticsearch.common.ReferenceDocs;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.concurrent.AbstractRunnable;
@@ -46,6 +47,7 @@ import org.elasticsearch.core.Releasable;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.core.Tuple;
+import org.elasticsearch.monitor.jvm.HotThreads;
 import org.elasticsearch.repositories.RepositoryCleanupResult;
 import org.elasticsearch.repositories.fs.FsRepository;
 import org.elasticsearch.test.InternalTestCluster;
@@ -55,6 +57,7 @@ import org.elasticsearch.threadpool.ThreadPool;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -370,16 +373,11 @@ public class SnapshotStressTestsIT extends AbstractSnapshotIntegTestCase {
                             "--> current cluster state:\n{}",
                             Strings.toString(clusterAdmin().prepareState().get().getState(), true, true)
                         );
-                        logger.info(
-                            "--> hot threads:\n{}",
-                            clusterAdmin().prepareNodesHotThreads()
-                                .setThreads(99999)
-                                .setIgnoreIdleThreads(false)
-                                .get()
-                                .getNodes()
-                                .stream()
-                                .map(NodeHotThreads::getHotThreads)
-                                .collect(Collectors.joining("\n"))
+                        HotThreads.logLocalHotThreads(
+                            logger,
+                            Level.INFO,
+                            "hot threads while failing to acquire permit [" + label + "]",
+                            ReferenceDocs.LOGGING
                         );
                         failedPermitAcquisitions.add(label);
                     }
@@ -496,6 +494,11 @@ public class SnapshotStressTestsIT extends AbstractSnapshotIntegTestCase {
                 final String[] indicesToRestore = indicesToRestoreList.toArray(new String[0]);
                 final String[] indicesToClose = indicesToCloseList.toArray(new String[0]);
                 final String[] indicesToDelete = indicesToDeleteList.toArray(new String[0]);
+                final String indicesToRestoreDescription = (restoreSpecificIndices ? "" : "*=") + Arrays.toString(indicesToRestore);
+
+                if (restoreSpecificIndices == false) {
+                    assertEquals(Set.copyOf(snapshotInfo.indices()), Set.of(indicesToRestore));
+                }
 
                 final ListenableFuture<Void> closeIndicesStep = new ListenableFuture<>();
                 final ListenableFuture<Void> deleteIndicesStep = new ListenableFuture<>();
@@ -515,15 +518,17 @@ public class SnapshotStressTestsIT extends AbstractSnapshotIntegTestCase {
                         );
 
                         logger.info(
-                            "--> closing indices {} in preparation for restoring from [{}:{}]",
-                            indicesToRestoreList,
+                            "--> closing indices {} in preparation for restoring {} from [{}:{}]",
+                            indicesToClose,
+                            indicesToRestoreDescription,
                             snapshotInfo.repository(),
                             snapshotInfo.snapshotId().getName()
                         );
                         indicesAdmin().prepareClose(indicesToClose).execute(mustSucceed(closeIndexResponse -> {
                             logger.info(
-                                "--> finished closing indices {} in preparation for restoring from [{}:{}]",
-                                indicesToRestoreList,
+                                "--> finished closing indices {} in preparation for restoring {} from [{}:{}]",
+                                indicesToClose,
+                                indicesToRestoreDescription,
                                 snapshotInfo.repository(),
                                 snapshotInfo.snapshotId().getName()
                             );
@@ -538,15 +543,17 @@ public class SnapshotStressTestsIT extends AbstractSnapshotIntegTestCase {
 
                 if (indicesToDelete.length > 0) {
                     logger.info(
-                        "--> deleting indices {} in preparation for restoring from [{}:{}]",
-                        indicesToRestoreList,
+                        "--> deleting indices {} in preparation for restoring {} from [{}:{}]",
+                        indicesToDelete,
+                        indicesToRestore,
                         snapshotInfo.repository(),
                         snapshotInfo.snapshotId().getName()
                     );
                     indicesAdmin().prepareDelete(indicesToDelete).execute(mustSucceed(deleteIndicesResponse -> {
                         logger.info(
-                            "--> finished deleting indices {} in preparation for restoring from [{}:{}]",
-                            indicesToRestoreList,
+                            "--> finished deleting indices {} in preparation for restoring {} from [{}:{}]",
+                            indicesToDelete,
+                            indicesToRestoreDescription,
                             snapshotInfo.repository(),
                             snapshotInfo.snapshotId().getName()
                         );
@@ -569,9 +576,8 @@ public class SnapshotStressTestsIT extends AbstractSnapshotIntegTestCase {
                     }
 
                     logger.info(
-                        "--> restoring indices {}{} from [{}:{}]",
-                        restoreSpecificIndices ? "" : "*=",
-                        indicesToRestoreList,
+                        "--> restoring indices {} from [{}:{}]",
+                        indicesToRestoreDescription,
                         snapshotInfo.repository(),
                         snapshotInfo.snapshotId().getName()
                     );
@@ -579,7 +585,7 @@ public class SnapshotStressTestsIT extends AbstractSnapshotIntegTestCase {
                     restoreSnapshotRequestBuilder.execute(mustSucceed(restoreSnapshotResponse -> {
                         logger.info(
                             "--> triggered restore of indices {} from [{}:{}], waiting for green health",
-                            indicesToRestoreList,
+                            indicesToRestoreDescription,
                             snapshotInfo.repository(),
                             snapshotInfo.snapshotId().getName()
                         );
@@ -590,7 +596,7 @@ public class SnapshotStressTestsIT extends AbstractSnapshotIntegTestCase {
 
                                 logger.info(
                                     "--> indices {} successfully restored from [{}:{}]",
-                                    indicesToRestoreList,
+                                    indicesToRestoreDescription,
                                     snapshotInfo.repository(),
                                     snapshotInfo.snapshotId().getName()
                                 );
