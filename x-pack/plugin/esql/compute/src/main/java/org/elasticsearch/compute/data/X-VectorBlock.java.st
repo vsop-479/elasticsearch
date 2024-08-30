@@ -44,8 +44,15 @@ $if(BytesRef)$
             return null;
         }
     }
-$endif$
 
+$elseif(boolean)$
+    @Override
+    public ToMask toMask() {
+        vector.incRef();
+        return new ToMask(vector, false);
+    }
+
+$endif$
     @Override
 $if(BytesRef)$
     public BytesRef getBytesRef(int valueIndex, BytesRef dest) {
@@ -72,9 +79,13 @@ $endif$
     }
 
     @Override
-    public ReleasableIterator<$Type$Block> lookup(IntBlock positions, ByteSizeValue targetBlockSize) {
-        // TODO optimizations
-        return new $Type$Lookup(this, positions, targetBlockSize);
+    public $Type$Block keepMask(BooleanVector mask) {
+        return vector.keepMask(mask);
+    }
+
+    @Override
+    public ReleasableIterator<? extends $Type$Block> lookup(IntBlock positions, ByteSizeValue targetBlockSize) {
+        return vector.lookup(positions, targetBlockSize);
     }
 
     @Override

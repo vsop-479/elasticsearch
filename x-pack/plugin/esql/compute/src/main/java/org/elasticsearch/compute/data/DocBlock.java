@@ -51,8 +51,13 @@ public class DocBlock extends AbstractVectorBlock implements Block {
     }
 
     @Override
+    public Block keepMask(BooleanVector mask) {
+        return vector.keepMask(mask);
+    }
+
+    @Override
     public ReleasableIterator<? extends Block> lookup(IntBlock positions, ByteSizeValue targetBlockSize) {
-        throw new UnsupportedOperationException();
+        throw new UnsupportedOperationException("can't lookup values from DocBlock");
     }
 
     @Override

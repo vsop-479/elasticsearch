@@ -10,8 +10,10 @@ package org.elasticsearch.compute.data;
 import org.apache.lucene.util.RamUsageEstimator;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.IntArray;
 import org.elasticsearch.core.Releasable;
+import org.elasticsearch.core.ReleasableIterator;
 
 import java.io.IOException;
 
@@ -124,6 +126,37 @@ public final class IntBigArrayVector extends AbstractVector implements IntVector
             filtered.set(i, values.get(positions[i]));
         }
         return new IntBigArrayVector(filtered, positions.length, blockFactory);
+    }
+
+    @Override
+    public IntBlock keepMask(BooleanVector mask) {
+        if (getPositionCount() == 0) {
+            incRef();
+            return new IntVectorBlock(this);
+        }
+        if (mask.isConstant()) {
+            if (mask.getBoolean(0)) {
+                incRef();
+                return new IntVectorBlock(this);
+            }
+            return (IntBlock) blockFactory().newConstantNullBlock(getPositionCount());
+        }
+        try (IntBlock.Builder builder = blockFactory().newIntBlockBuilder(getPositionCount())) {
+            // TODO if X-ArrayBlock used BooleanVector for it's null mask then we could shuffle references here.
+            for (int p = 0; p < getPositionCount(); p++) {
+                if (mask.getBoolean(p)) {
+                    builder.appendInt(getInt(p));
+                } else {
+                    builder.appendNull();
+                }
+            }
+            return builder.build();
+        }
+    }
+
+    @Override
+    public ReleasableIterator<IntBlock> lookup(IntBlock positions, ByteSizeValue targetBlockSize) {
+        return new IntLookup(asBlock(), positions, targetBlockSize);
     }
 
     @Override

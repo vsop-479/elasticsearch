@@ -31,6 +31,8 @@ import org.elasticsearch.xpack.core.security.authc.support.UsernamePasswordToken
 import org.elasticsearch.xpack.core.security.authz.RoleDescriptor;
 import org.elasticsearch.xpack.core.security.authz.permission.RemoteClusterPermissionGroup;
 import org.elasticsearch.xpack.core.security.authz.permission.RemoteClusterPermissions;
+import org.elasticsearch.xpack.core.security.authz.privilege.ConfigurableClusterPrivilege;
+import org.elasticsearch.xpack.core.security.authz.privilege.ConfigurableClusterPrivileges;
 import org.elasticsearch.xpack.security.SecurityOnTrialLicenseRestTestCase;
 import org.junit.After;
 import org.junit.Before;
@@ -122,7 +124,7 @@ public class ApiKeyRestIT extends SecurityOnTrialLicenseRestTestCase {
     public void testGetApiKeyRoleDescriptors() throws IOException {
         // First key without assigned role descriptors, i.e. it inherits owner user's permission
         // This can be achieved by either omitting the role_descriptors field in the request or
-        // explicitly set it to an empty object
+        // explicitly set it to an empty object.
         final Request createApiKeyRequest1 = new Request("POST", "_security/api_key");
         if (randomBoolean()) {
             createApiKeyRequest1.setJsonEntity("""
@@ -383,6 +385,50 @@ public class ApiKeyRestIT extends SecurityOnTrialLicenseRestTestCase {
 
         assertEquals(403, e.getResponse().getStatusLine().getStatusCode());
         assertThat(e.getMessage(), containsString("action [" + GrantApiKeyAction.NAME + "] is unauthorized for user"));
+    }
+
+    public void testApiKeyWithManageRoles() throws IOException {
+        RoleDescriptor role = roleWithManageRoles("manage-roles-role", new String[] { "manage_own_api_key" }, "allowed-prefix*");
+        getSecurityClient().putRole(role);
+        createUser("test-user", END_USER_PASSWORD, List.of("manage-roles-role"));
+
+        final Request createApiKeyrequest = new Request("POST", "_security/api_key");
+        createApiKeyrequest.setOptions(
+            RequestOptions.DEFAULT.toBuilder().addHeader("Authorization", basicAuthHeaderValue("test-user", END_USER_PASSWORD))
+        );
+        final Map<String, Object> requestBody = Map.of(
+            "name",
+            "test-api-key",
+            "role_descriptors",
+            Map.of(
+                "test-role",
+                XContentTestUtils.convertToMap(roleWithManageRoles("test-role", new String[0], "allowed-prefix*")),
+                "another-test-role",
+                // This is not allowed by the limited-by-role (creator of the api key), so should not grant access to not-allowed=prefix*
+                XContentTestUtils.convertToMap(roleWithManageRoles("another-test-role", new String[0], "not-allowed-prefix*"))
+            )
+        );
+
+        createApiKeyrequest.setJsonEntity(XContentTestUtils.convertToXContent(requestBody, XContentType.JSON).utf8ToString());
+        Map<String, Object> responseMap = responseAsMap(client().performRequest(createApiKeyrequest));
+        String encodedApiKey = responseMap.get("encoded").toString();
+
+        final Request createRoleRequest = new Request("POST", "_security/role/test-role");
+        createRoleRequest.setOptions(RequestOptions.DEFAULT.toBuilder().addHeader("Authorization", "ApiKey " + encodedApiKey));
+        // Allowed role by manage roles permission
+        {
+            createRoleRequest.setJsonEntity("""
+                {"indices": [{"names": ["allowed-prefix-test"],"privileges": ["read"]}]}""");
+            assertOK(client().performRequest(createRoleRequest));
+        }
+        // Not allowed role by manage roles permission
+        {
+            createRoleRequest.setJsonEntity("""
+                {"indices": [{"names": ["not-allowed-prefix-test"],"privileges": ["read"]}]}""");
+            final ResponseException e = expectThrows(ResponseException.class, () -> client().performRequest(createRoleRequest));
+            assertEquals(403, e.getResponse().getStatusLine().getStatusCode());
+            assertThat(e.getMessage(), containsString("this action is granted by the cluster privileges [manage_security,all]"));
+        }
     }
 
     public void testUpdateApiKey() throws IOException {
@@ -1019,8 +1065,7 @@ public class ApiKeyRestIT extends SecurityOnTrialLicenseRestTestCase {
               "access": {
                 "search": [
                   {
-                    "names": [ "metrics" ],
-                    "query": "{\\"term\\":{\\"score\\":42}}"
+                    "names": [ "metrics" ]
                   }
                 ],
                 "replication": [
@@ -1085,7 +1130,6 @@ public class ApiKeyRestIT extends SecurityOnTrialLicenseRestTestCase {
                                 RoleDescriptor.IndicesPrivileges.builder()
                                     .indices("metrics")
                                     .privileges("read", "read_cross_cluster", "view_index_metadata")
-                                    .query("{\"term\":{\"score\":42}}")
                                     .build(),
                                 RoleDescriptor.IndicesPrivileges.builder()
                                     .indices("logs")
@@ -1105,7 +1149,6 @@ public class ApiKeyRestIT extends SecurityOnTrialLicenseRestTestCase {
                     "names": [
                       "metrics"
                     ],
-                    "query": "{\\"term\\":{\\"score\\":42}}",
                     "allow_restricted_indices": false
                   }
                 ],
@@ -1381,6 +1424,67 @@ public class ApiKeyRestIT extends SecurityOnTrialLicenseRestTestCase {
             }""", "replication does not support document or field level security");
     }
 
+    public void testCrossClusterApiKeyDoesNotAllowDlsFlsForSearchWhenReplicationAssigned() throws IOException {
+        assertBadCreateCrossClusterApiKeyRequest("""
+            {
+              "name": "key",
+              "access": {
+                "search": [ {"names": ["logs"], "query":{"term": {"tag": 42}}} ],
+                "replication": [ {"names": ["logs"]} ]
+              }
+            }""", "search does not support document or field level security if replication is assigned");
+
+        assertBadCreateCrossClusterApiKeyRequest("""
+            {
+              "name": "key",
+              "access": {
+                "search": [ {"names": ["logs"], "field_security": {"grant": ["*"], "except": ["private"]}} ],
+                "replication": [ {"names": ["logs"]} ]
+              }
+            }""", "search does not support document or field level security if replication is assigned");
+
+        assertBadCreateCrossClusterApiKeyRequest("""
+            {
+              "name": "key",
+              "access": {
+                "search": [ {
+                  "names": ["logs"],
+                  "query": {"term": {"tag": 42}},
+                  "field_security": {"grant": ["*"], "except": ["private"]}
+                 } ],
+                 "replication": [ {"names": ["logs"]} ]
+              }
+            }""", "search does not support document or field level security if replication is assigned");
+
+        assertBadUpdateCrossClusterApiKeyRequest("""
+            {
+              "access": {
+                "search": [ {"names": ["logs"], "query":{"term": {"tag": 42}}} ],
+                "replication": [ {"names": ["logs"]} ]
+              }
+            }""", "search does not support document or field level security if replication is assigned");
+
+        assertBadUpdateCrossClusterApiKeyRequest("""
+            {
+              "access": {
+                "search": [ {"names": ["logs"], "field_security": {"grant": ["*"], "except": ["private"]}} ],
+                "replication": [ {"names": ["logs"]} ]
+              }
+            }""", "search does not support document or field level security if replication is assigned");
+
+        assertBadUpdateCrossClusterApiKeyRequest("""
+            {
+              "access": {
+                "search": [ {
+                  "names": ["logs"],
+                  "query": {"term": {"tag": 42}},
+                  "field_security": {"grant": ["*"], "except": ["private"]}
+                 } ],
+                 "replication": [ {"names": ["logs"]} ]
+              }
+            }""", "search does not support document or field level security if replication is assigned");
+    }
+
     public void testCrossClusterApiKeyRequiresName() throws IOException {
         assertBadCreateCrossClusterApiKeyRequest("""
             {
@@ -1414,8 +1518,7 @@ public class ApiKeyRestIT extends SecurityOnTrialLicenseRestTestCase {
               "access": {
                 "search": [
                   {
-                    "names": [ "data" ],
-                    "query": "{\\"term\\":{\\"score\\":42}}"
+                    "names": [ "data" ]
                   }
                 ],
                 "replication": [
@@ -1437,7 +1540,6 @@ public class ApiKeyRestIT extends SecurityOnTrialLicenseRestTestCase {
                 RoleDescriptor.IndicesPrivileges.builder()
                     .indices("data")
                     .privileges("read", "read_cross_cluster", "view_index_metadata")
-                    .query("{\"term\":{\"score\":42}}")
                     .build(),
                 RoleDescriptor.IndicesPrivileges.builder()
                     .indices("logs")
@@ -1457,7 +1559,6 @@ public class ApiKeyRestIT extends SecurityOnTrialLicenseRestTestCase {
               "search": [
                 {
                   "names": [ "data" ],
-                  "query": "{\\"term\\":{\\"score\\":42}}",
                   "allow_restricted_indices": false
                 }
               ],
@@ -2069,6 +2170,16 @@ public class ApiKeyRestIT extends SecurityOnTrialLicenseRestTestCase {
         assertThat(e.getMessage(), containsString(expectedErrorMessage));
     }
 
+    private void assertBadUpdateCrossClusterApiKeyRequest(String body, String expectedErrorMessage) throws IOException {
+        // doesn't matter that `id` does not exist: validation happens before that check
+        final Request request = new Request("PUT", "/_security/cross_cluster/api_key/id");
+        request.setJsonEntity(body);
+        setUserForRequest(request, MANAGE_SECURITY_USER, END_USER_PASSWORD);
+        final ResponseException e = expectThrows(ResponseException.class, () -> client().performRequest(request));
+        assertThat(e.getResponse().getStatusLine().getStatusCode(), equalTo(400));
+        assertThat(e.getMessage(), containsString(expectedErrorMessage));
+    }
+
     private Response sendRequestWithRemoteIndices(final Request request, final boolean executeAsRemoteIndicesUser) throws IOException {
         if (executeAsRemoteIndicesUser) {
             return sendRequestAsRemoteUser(request);
@@ -2326,6 +2437,27 @@ public class ApiKeyRestIT extends SecurityOnTrialLicenseRestTestCase {
             null
         );
         getSecurityClient().putRole(role);
+    }
+
+    private RoleDescriptor roleWithManageRoles(String name, String[] clusterPrivileges, String indexPattern) {
+        return new RoleDescriptor(
+            name,
+            clusterPrivileges,
+            null,
+            null,
+            new ConfigurableClusterPrivilege[] {
+                new ConfigurableClusterPrivileges.ManageRolesPrivilege(
+                    List.of(
+                        new ConfigurableClusterPrivileges.ManageRolesPrivilege.ManageRolesIndexPermissionGroup(
+                            new String[] { indexPattern },
+                            new String[] { "read" }
+                        )
+                    )
+                ) },
+            null,
+            null,
+            null
+        );
     }
 
     protected void createRoleWithDescription(String name, Collection<String> clusterPrivileges, String description) throws IOException {

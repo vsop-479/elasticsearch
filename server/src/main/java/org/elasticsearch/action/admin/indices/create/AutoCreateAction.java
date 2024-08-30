@@ -37,7 +37,6 @@ import org.elasticsearch.cluster.routing.allocation.allocator.AllocationActionMu
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.cluster.service.MasterServiceTaskQueue;
 import org.elasticsearch.common.Priority;
-import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.Maps;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
@@ -46,6 +45,7 @@ import org.elasticsearch.index.IndexNotFoundException;
 import org.elasticsearch.indices.SystemDataStreamDescriptor;
 import org.elasticsearch.indices.SystemIndexDescriptor;
 import org.elasticsearch.indices.SystemIndices;
+import org.elasticsearch.injection.guice.Inject;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
@@ -261,14 +261,15 @@ public final class AutoCreateAction extends ActionType<CreateIndexResponse> {
                     ClusterState clusterState = metadataCreateDataStreamService.createDataStream(
                         createRequest,
                         currentState,
-                        rerouteCompletionIsNotRequired()
+                        rerouteCompletionIsNotRequired(),
+                        request.isInitializeFailureStore()
                     );
 
                     final var dataStream = clusterState.metadata().dataStreams().get(request.index());
                     final var backingIndexName = dataStream.getIndices().get(0).getName();
-                    final var indexNames = dataStream.getFailureIndices().isEmpty()
+                    final var indexNames = dataStream.getFailureIndices().getIndices().isEmpty()
                         ? List.of(backingIndexName)
-                        : List.of(backingIndexName, dataStream.getFailureIndices().get(0).getName());
+                        : List.of(backingIndexName, dataStream.getFailureIndices().getIndices().get(0).getName());
                     taskContext.success(getAckListener(indexNames, allocationActionMultiListener));
                     successfulRequests.put(request, indexNames);
                     return clusterState;

@@ -54,18 +54,20 @@ public class ResolveClusterActionRequest extends ActionRequest implements Indice
         this(names, DEFAULT_INDICES_OPTIONS);
     }
 
+    @SuppressWarnings("this-escape")
     public ResolveClusterActionRequest(String[] names, IndicesOptions indicesOptions) {
         this.names = names;
         this.localIndicesRequested = localIndicesPresent(names);
         this.indicesOptions = indicesOptions;
     }
 
+    @SuppressWarnings("this-escape")
     public ResolveClusterActionRequest(StreamInput in) throws IOException {
         super(in);
-        if (in.getTransportVersion().before(TransportVersions.RESOLVE_CLUSTER_ENDPOINT_ADDED)) {
+        if (in.getTransportVersion().before(TransportVersions.V_8_13_0)) {
             throw new UnsupportedOperationException(
-                "ResolveClusterAction requires at least Transport Version "
-                    + TransportVersions.RESOLVE_CLUSTER_ENDPOINT_ADDED.toReleaseVersion()
+                "ResolveClusterAction requires at least version "
+                    + TransportVersions.V_8_13_0.toReleaseVersion()
                     + " but was "
                     + in.getTransportVersion().toReleaseVersion()
             );
@@ -78,10 +80,10 @@ public class ResolveClusterActionRequest extends ActionRequest implements Indice
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         super.writeTo(out);
-        if (out.getTransportVersion().before(TransportVersions.RESOLVE_CLUSTER_ENDPOINT_ADDED)) {
+        if (out.getTransportVersion().before(TransportVersions.V_8_13_0)) {
             throw new UnsupportedOperationException(
-                "ResolveClusterAction requires at least Transport Version "
-                    + TransportVersions.RESOLVE_CLUSTER_ENDPOINT_ADDED.toReleaseVersion()
+                "ResolveClusterAction requires at least version "
+                    + TransportVersions.V_8_13_0.toReleaseVersion()
                     + " but was "
                     + out.getTransportVersion().toReleaseVersion()
             );

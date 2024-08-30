@@ -24,14 +24,21 @@ public class MockSparseInferenceServiceIT extends InferenceBaseRestTest {
         var model = getModels(inferenceEntityId, TaskType.SPARSE_EMBEDDING).get(0);
 
         for (var modelMap : List.of(putModel, model)) {
-            assertEquals(inferenceEntityId, modelMap.get("model_id"));
+            assertEquals(inferenceEntityId, modelMap.get("inference_id"));
             assertEquals(TaskType.SPARSE_EMBEDDING, TaskType.fromString((String) modelMap.get("task_type")));
             assertEquals("test_service", modelMap.get("service"));
         }
 
-        // The response is randomly generated, the input can be anything
-        var inference = inferOnMockService(inferenceEntityId, List.of(randomAlphaOfLength(10)));
+        List<String> input = List.of(randomAlphaOfLength(10));
+        var inference = inferOnMockService(inferenceEntityId, input);
         assertNonEmptyInferenceResults(inference, 1, TaskType.SPARSE_EMBEDDING);
+        // Same input should return the same result
+        assertEquals(inference, inferOnMockService(inferenceEntityId, input));
+        // Different input values should not
+        assertNotEquals(
+            inference,
+            inferOnMockService(inferenceEntityId, randomValueOtherThan(input, () -> List.of(randomAlphaOfLength(10))))
+        );
     }
 
     public void testMockServiceWithMultipleInputs() throws IOException {
@@ -70,7 +77,7 @@ public class MockSparseInferenceServiceIT extends InferenceBaseRestTest {
         var model = getModels(inferenceEntityId, TaskType.SPARSE_EMBEDDING).get(0);
 
         for (var modelMap : List.of(putModel, model)) {
-            assertEquals(inferenceEntityId, modelMap.get("model_id"));
+            assertEquals(inferenceEntityId, modelMap.get("inference_id"));
             assertThat(modelMap.get("service_settings"), is(Map.of("model", "my_model")));
             assertEquals(TaskType.SPARSE_EMBEDDING, TaskType.fromString((String) modelMap.get("task_type")));
             assertEquals("test_service", modelMap.get("service"));
@@ -88,7 +95,7 @@ public class MockSparseInferenceServiceIT extends InferenceBaseRestTest {
         var model = getModels(inferenceEntityId, TaskType.SPARSE_EMBEDDING).get(0);
 
         for (var modelMap : List.of(putModel, model)) {
-            assertEquals(inferenceEntityId, modelMap.get("model_id"));
+            assertEquals(inferenceEntityId, modelMap.get("inference_id"));
             assertThat(modelMap.get("service_settings"), is(Map.of("model", "my_model", "hidden_field", "my_hidden_value")));
             assertEquals(TaskType.SPARSE_EMBEDDING, TaskType.fromString((String) modelMap.get("task_type")));
             assertEquals("test_service", modelMap.get("service"));

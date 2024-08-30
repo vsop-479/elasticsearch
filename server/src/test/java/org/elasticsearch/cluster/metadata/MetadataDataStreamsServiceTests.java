@@ -12,6 +12,7 @@ import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Strings;
+import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.core.Tuple;
 import org.elasticsearch.index.Index;
@@ -357,7 +358,12 @@ public class MetadataDataStreamsServiceTests extends MapperServiceTestCase {
         var state = DataStreamTestHelper.getClusterStateWithDataStreams(List.of(new Tuple<>(dataStreamName, 2)), List.of());
         var original = state.getMetadata().dataStreams().get(dataStreamName);
         var broken = original.copy()
-            .setIndices(List.of(new Index(original.getIndices().get(0).getName(), "broken"), original.getIndices().get(1)))
+            .setBackingIndices(
+                original.getBackingIndices()
+                    .copy()
+                    .setIndices(List.of(new Index(original.getIndices().get(0).getName(), "broken"), original.getIndices().get(1)))
+                    .build()
+            )
             .build();
         var brokenState = ClusterState.builder(state).metadata(Metadata.builder(state.getMetadata()).put(broken).build()).build();
 
@@ -395,7 +401,10 @@ public class MetadataDataStreamsServiceTests extends MapperServiceTestCase {
         MetadataDataStreamsService service = new MetadataDataStreamsService(
             mock(ClusterService.class),
             mock(IndicesService.class),
-            new DataStreamGlobalRetentionResolver(DataStreamFactoryRetention.emptyFactoryRetention())
+            DataStreamGlobalRetentionSettings.create(
+                ClusterSettings.createBuiltInClusterSettings(),
+                DataStreamFactoryRetention.emptyFactoryRetention()
+            )
         );
         {
             // Remove lifecycle
