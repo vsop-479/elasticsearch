@@ -10,6 +10,7 @@ package org.elasticsearch.xpack.esql.planner;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.compute.Describable;
+import org.elasticsearch.compute.aggregation.AggregatorMode;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BlockFactory;
 import org.elasticsearch.compute.data.ElementType;
@@ -168,7 +169,7 @@ public class LocalExecutionPlanner {
         // workaround for https://github.com/elastic/elasticsearch/issues/99782
         localPhysicalPlan = localPhysicalPlan.transformUp(
             AggregateExec.class,
-            a -> a.getMode() == AggregateExec.Mode.FINAL ? new ProjectExec(a.source(), a, Expressions.asAttributes(a.aggregates())) : a
+            a -> a.getMode() == AggregatorMode.FINAL ? new ProjectExec(a.source(), a, Expressions.asAttributes(a.aggregates())) : a
         );
         PhysicalOperation physicalOperation = plan(localPhysicalPlan, context);
 
@@ -348,7 +349,7 @@ public class LocalExecutionPlanner {
             elementTypes[channel] = PlannerUtils.toElementType(inverse.get(channel).type());
             encoders[channel] = switch (inverse.get(channel).type()) {
                 case IP -> TopNEncoder.IP;
-                case TEXT, KEYWORD -> TopNEncoder.UTF8;
+                case TEXT, KEYWORD, SEMANTIC_TEXT -> TopNEncoder.UTF8;
                 case VERSION -> TopNEncoder.VERSION;
                 case BOOLEAN, NULL, BYTE, SHORT, INTEGER, LONG, DOUBLE, FLOAT, HALF_FLOAT, DATETIME, DATE_NANOS, DATE_PERIOD, TIME_DURATION,
                     OBJECT, SCALED_FLOAT, UNSIGNED_LONG, DOC_DATA_TYPE, TSID_DATA_TYPE -> TopNEncoder.DEFAULT_SORTABLE;
@@ -495,18 +496,19 @@ public class LocalExecutionPlanner {
     }
 
     private PhysicalOperation planHashJoin(HashJoinExec join, LocalExecutionPlannerContext context) {
-        PhysicalOperation source = plan(join.child(), context);
+        PhysicalOperation source = plan(join.left(), context);
         int positionsChannel = source.layout.numberOfChannels();
 
         Layout.Builder layoutBuilder = source.layout.builder();
         for (Attribute f : join.output()) {
-            if (join.child().outputSet().contains(f)) {
+            if (join.left().outputSet().contains(f)) {
                 continue;
             }
             layoutBuilder.append(f);
         }
         Layout layout = layoutBuilder.build();
-        Block[] localData = join.joinData().supplier().get();
+        LocalSourceExec localSourceExec = (LocalSourceExec) join.joinData();
+        Block[] localData = localSourceExec.supplier().get();
 
         RowInTableLookupOperator.Key[] keys = new RowInTableLookupOperator.Key[join.leftFields().size()];
         int[] blockMapping = new int[join.leftFields().size()];
@@ -514,8 +516,9 @@ public class LocalExecutionPlanner {
             Attribute left = join.leftFields().get(k);
             Attribute right = join.rightFields().get(k);
             Block localField = null;
-            for (int l = 0; l < join.joinData().output().size(); l++) {
-                if (join.joinData().output().get(l).name().equals((((NamedExpression) right).name()))) {
+            List<Attribute> output = join.joinData().output();
+            for (int l = 0; l < output.size(); l++) {
+                if (output.get(l).name().equals(right.name())) {
                     localField = localData[l];
                 }
             }

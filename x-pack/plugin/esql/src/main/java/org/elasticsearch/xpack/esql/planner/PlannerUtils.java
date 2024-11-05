@@ -10,6 +10,7 @@ package org.elasticsearch.xpack.esql.planner;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.breaker.NoopCircuitBreaker;
 import org.elasticsearch.common.util.BigArrays;
+import org.elasticsearch.compute.aggregation.AggregatorMode;
 import org.elasticsearch.compute.data.BlockFactory;
 import org.elasticsearch.compute.data.ElementType;
 import org.elasticsearch.core.Tuple;
@@ -48,6 +49,8 @@ import org.elasticsearch.xpack.esql.plan.physical.LimitExec;
 import org.elasticsearch.xpack.esql.plan.physical.OrderExec;
 import org.elasticsearch.xpack.esql.plan.physical.PhysicalPlan;
 import org.elasticsearch.xpack.esql.plan.physical.TopNExec;
+import org.elasticsearch.xpack.esql.planner.mapper.LocalMapper;
+import org.elasticsearch.xpack.esql.planner.mapper.Mapper;
 import org.elasticsearch.xpack.esql.session.Configuration;
 import org.elasticsearch.xpack.esql.stats.SearchStats;
 
@@ -61,10 +64,11 @@ import static java.util.Arrays.asList;
 import static org.elasticsearch.index.mapper.MappedFieldType.FieldExtractPreference.DOC_VALUES;
 import static org.elasticsearch.index.mapper.MappedFieldType.FieldExtractPreference.NONE;
 import static org.elasticsearch.xpack.esql.core.util.Queries.Clause.FILTER;
-import static org.elasticsearch.xpack.esql.optimizer.LocalPhysicalPlanOptimizer.PushFiltersToSource.canPushToSource;
-import static org.elasticsearch.xpack.esql.optimizer.LocalPhysicalPlanOptimizer.TRANSLATOR_HANDLER;
+import static org.elasticsearch.xpack.esql.optimizer.rules.physical.local.PushFiltersToSource.canPushToSource;
 
 public class PlannerUtils {
+
+    public static final EsqlTranslatorHandler TRANSLATOR_HANDLER = new EsqlTranslatorHandler();
 
     public static Tuple<PhysicalPlan, PhysicalPlan> breakPlanBetweenCoordinatorAndDataNode(PhysicalPlan plan, Configuration config) {
         var dataNodePlan = new Holder<PhysicalPlan>();
@@ -86,7 +90,7 @@ public class PlannerUtils {
         if (pipelineBreakers.isEmpty() == false) {
             UnaryPlan pipelineBreaker = (UnaryPlan) pipelineBreakers.get(0);
             if (pipelineBreaker instanceof TopN) {
-                Mapper mapper = new Mapper(true);
+                LocalMapper mapper = new LocalMapper();
                 var physicalPlan = EstimatesRowSize.estimateRowSize(0, mapper.map(plan));
                 return physicalPlan.collectFirstChildren(TopNExec.class::isInstance).get(0);
             } else if (pipelineBreaker instanceof Limit limit) {
@@ -94,10 +98,10 @@ public class PlannerUtils {
             } else if (pipelineBreaker instanceof OrderBy order) {
                 return new OrderExec(order.source(), unused, order.order());
             } else if (pipelineBreaker instanceof Aggregate) {
-                Mapper mapper = new Mapper(true);
+                LocalMapper mapper = new LocalMapper();
                 var physicalPlan = EstimatesRowSize.estimateRowSize(0, mapper.map(plan));
                 var aggregate = (AggregateExec) physicalPlan.collectFirstChildren(AggregateExec.class::isInstance).get(0);
-                return aggregate.withMode(AggregateExec.Mode.PARTIAL);
+                return aggregate.withMode(AggregatorMode.INITIAL);
             } else {
                 throw new EsqlIllegalArgumentException("unsupported unary physical plan node [" + pipelineBreaker.nodeName() + "]");
             }
@@ -149,13 +153,13 @@ public class PlannerUtils {
         LocalLogicalPlanOptimizer logicalOptimizer,
         LocalPhysicalPlanOptimizer physicalOptimizer
     ) {
-        final Mapper mapper = new Mapper(true);
+        final LocalMapper localMapper = new LocalMapper();
         var isCoordPlan = new Holder<>(Boolean.TRUE);
 
         var localPhysicalPlan = plan.transformUp(FragmentExec.class, f -> {
             isCoordPlan.set(Boolean.FALSE);
             var optimizedFragment = logicalOptimizer.localOptimize(f.fragment());
-            var physicalFragment = mapper.map(optimizedFragment);
+            var physicalFragment = localMapper.map(optimizedFragment);
             var filter = f.esFilter();
             if (filter != null) {
                 physicalFragment = physicalFragment.transformUp(
@@ -245,7 +249,7 @@ public class PlannerUtils {
             case INTEGER, COUNTER_INTEGER -> ElementType.INT;
             case DOUBLE, COUNTER_DOUBLE -> ElementType.DOUBLE;
             // unsupported fields are passed through as a BytesRef
-            case KEYWORD, TEXT, IP, SOURCE, VERSION, UNSUPPORTED -> ElementType.BYTES_REF;
+            case KEYWORD, TEXT, IP, SOURCE, VERSION, SEMANTIC_TEXT, UNSUPPORTED -> ElementType.BYTES_REF;
             case NULL -> ElementType.NULL;
             case BOOLEAN -> ElementType.BOOLEAN;
             case DOC_DATA_TYPE -> ElementType.DOC;

@@ -14,6 +14,8 @@ import org.elasticsearch.action.fieldcaps.IndexFieldCapabilities;
 import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.Strings;
+import org.elasticsearch.common.util.Maps;
+import org.elasticsearch.index.IndexMode;
 import org.elasticsearch.index.mapper.TimeSeriesParams;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.xpack.esql.action.EsqlResolveFieldsAction;
@@ -85,6 +87,7 @@ public class IndexResolver {
     public IndexResolution mergedMappings(String indexPattern, FieldCapabilitiesResponse fieldCapsResponse) {
         assert ThreadPool.assertCurrentThreadPool(ThreadPool.Names.SEARCH_COORDINATION); // too expensive to run this on a transport worker
         if (fieldCapsResponse.getIndexResponses().isEmpty()) {
+            // TODO in follow-on PR, handle the case where remotes were specified with non-existent indices, according to skip_unavailable
             return IndexResolution.notFound(indexPattern);
         }
 
@@ -146,14 +149,15 @@ public class IndexResolver {
         }
         if (allEmpty) {
             // If all the mappings are empty we return an empty set of resolved indices to line up with QL
-            return IndexResolution.valid(new EsIndex(indexPattern, rootFields, Set.of()));
+            return IndexResolution.valid(new EsIndex(indexPattern, rootFields, Map.of()));
         }
 
-        Set<String> concreteIndices = new HashSet<>(fieldCapsResponse.getIndexResponses().size());
+        Map<String, IndexMode> concreteIndices = Maps.newMapWithExpectedSize(fieldCapsResponse.getIndexResponses().size());
         for (FieldCapabilitiesIndexResponse ir : fieldCapsResponse.getIndexResponses()) {
-            concreteIndices.add(ir.getIndexName());
+            concreteIndices.put(ir.getIndexName(), ir.getIndexMode());
         }
-        return IndexResolution.valid(new EsIndex(indexPattern, rootFields, concreteIndices));
+        EsIndex esIndex = new EsIndex(indexPattern, rootFields, concreteIndices);
+        return IndexResolution.valid(esIndex, EsqlSessionCCSUtils.determineUnavailableRemoteClusters(fieldCapsResponse.getFailures()));
     }
 
     private boolean allNested(List<IndexFieldCapabilities> caps) {
