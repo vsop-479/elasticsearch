@@ -24,7 +24,6 @@ import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.repositories.blobstore.BlobStoreRepository;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
-import org.elasticsearch.test.rest.RestTestLegacyFeatures;
 import org.elasticsearch.xcontent.XContentBuilder;
 
 import java.io.IOException;
@@ -50,12 +49,6 @@ public class SnapshotBasedRecoveryIT extends AbstractRollingUpgradeTestCase {
     }
 
     public void testSnapshotBasedRecovery() throws Exception {
-        assumeTrue(
-            "Cancel shard allocation command is broken for initial versions of the desired_balance allocator",
-            oldClusterHasFeature(RestTestLegacyFeatures.DESIRED_BALANCED_ALLOCATOR_SUPPORTED) == false
-                || oldClusterHasFeature(RestTestLegacyFeatures.DESIRED_BALANCED_ALLOCATOR_FIXED)
-        );
-
         final String indexName = "snapshot_based_recovery";
         final String repositoryName = "snapshot_based_recovery_repo";
         final int numDocs = 200;
@@ -240,7 +233,7 @@ public class SnapshotBasedRecoveryIT extends AbstractRollingUpgradeTestCase {
         return responseAsMap;
     }
 
-    private void indexDocs(String indexName, int numDocs) throws IOException {
+    static void indexDocs(String indexName, int numDocs) throws IOException {
         final StringBuilder bulkBody = new StringBuilder();
         for (int i = 0; i < numDocs; i++) {
             bulkBody.append("{\"index\":{\"_id\":\"").append(i).append("\"}}\n");

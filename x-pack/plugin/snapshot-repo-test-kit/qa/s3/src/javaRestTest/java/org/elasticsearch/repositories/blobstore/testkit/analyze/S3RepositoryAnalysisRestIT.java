@@ -9,6 +9,7 @@ package org.elasticsearch.repositories.blobstore.testkit.analyze;
 import fixture.s3.S3HttpFixture;
 
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.test.cluster.ElasticsearchCluster;
 import org.elasticsearch.test.cluster.local.distribution.DistributionType;
 import org.junit.ClassRule;
@@ -31,13 +32,6 @@ public class S3RepositoryAnalysisRestIT extends AbstractRepositoryAnalysisRestTe
         .setting("s3.client.repo_test_kit.protocol", () -> "http", (n) -> USE_FIXTURE)
         .setting("s3.client.repo_test_kit.endpoint", s3Fixture::getAddress, (n) -> USE_FIXTURE)
         .setting("xpack.security.enabled", "false")
-        // Additional tracing related to investigation into https://github.com/elastic/elasticsearch/issues/102294
-        .setting("logger.org.elasticsearch.repositories.s3", "TRACE")
-        .setting("logger.org.elasticsearch.repositories.blobstore.testkit", "TRACE")
-        .setting("logger.com.amazonaws.request", "DEBUG")
-        .setting("logger.org.apache.http.wire", "DEBUG")
-        // Necessary to permit setting the above two restricted loggers to DEBUG
-        .jvmArg("-Des.insecure_network_trace_enabled=true")
         .build();
 
     @ClassRule
@@ -66,6 +60,7 @@ public class S3RepositoryAnalysisRestIT extends AbstractRepositoryAnalysisRestTe
             .put("bucket", bucket)
             .put("base_path", basePath)
             .put("delete_objects_max_size", between(1, 1000))
+            .put("buffer_size", ByteSizeValue.ofMb(5)) // so some uploads are multipart ones
             .build();
     }
 }

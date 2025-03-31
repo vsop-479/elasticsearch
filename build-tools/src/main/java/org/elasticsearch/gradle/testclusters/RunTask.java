@@ -24,6 +24,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -42,7 +43,10 @@ public abstract class RunTask extends DefaultTestClustersTask {
 
     private Boolean debug = false;
     private Boolean cliDebug = false;
+
     private Boolean apmServerEnabled = false;
+
+    private List<String> plugins = List.of();
 
     private Boolean preserveData = false;
 
@@ -69,6 +73,12 @@ public abstract class RunTask extends DefaultTestClustersTask {
         this.cliDebug = enabled;
     }
 
+    @Option(
+        option = "entitlements",
+        description = "Use the Entitlements agent system in place of SecurityManager to enforce sandbox policies."
+    )
+    public void setEntitlementsEnabled(boolean enabled) {}
+
     @Input
     public Boolean getDebug() {
         return debug;
@@ -80,6 +90,11 @@ public abstract class RunTask extends DefaultTestClustersTask {
     }
 
     @Input
+    public Boolean getEntitlementsEnabled() {
+        return true;
+    }
+
+    @Input
     public Boolean getApmServerEnabled() {
         return apmServerEnabled;
     }
@@ -87,6 +102,22 @@ public abstract class RunTask extends DefaultTestClustersTask {
     @Option(option = "with-apm-server", description = "Run simple logging http server to accept apm requests")
     public void setApmServerEnabled(Boolean apmServerEnabled) {
         this.apmServerEnabled = apmServerEnabled;
+    }
+
+    @Option(option = "with-plugins", description = "Run distribution with plugins installed")
+    public void setPlugins(String plugins) {
+        this.plugins = Arrays.asList(plugins.split(","));
+        for (var cluster : getClusters()) {
+            for (String plugin : this.plugins) {
+                cluster.plugin(":plugins:" + plugin);
+            }
+            dependsOn(cluster.getPluginAndModuleConfigurations());
+        }
+    }
+
+    @Input
+    public List<String> getPlugins() {
+        return plugins;
     }
 
     @Option(option = "data-dir", description = "Override the base data directory used by the testcluster")
@@ -226,6 +257,7 @@ public abstract class RunTask extends DefaultTestClustersTask {
         if (cliDebug) {
             enableCliDebug();
         }
+        enableEntitlements();
     }
 
     @TaskAction

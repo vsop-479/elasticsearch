@@ -34,7 +34,6 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
 import org.elasticsearch.core.Nullable;
-import org.elasticsearch.core.UpdateForV9;
 import org.elasticsearch.index.IndexVersion;
 import org.elasticsearch.index.IndexVersions;
 import org.elasticsearch.plugins.Plugin;
@@ -128,6 +127,7 @@ public abstract class AbstractSnapshotIntegTestCase extends ESIntegTestCase {
 
     @After
     public void assertConsistentHistoryInLuceneIndex() throws Exception {
+        internalCluster().beforeIndexDeletion();
         internalCluster().assertConsistentHistoryBetweenTranslogAndLuceneIndex();
     }
 
@@ -366,14 +366,12 @@ public abstract class AbstractSnapshotIntegTestCase extends ESIntegTestCase {
     /**
      * Randomly write an empty snapshot of an older version to an empty repository to simulate an older repository metadata format.
      */
-    @UpdateForV9(owner = UpdateForV9.Owner.DISTRIBUTED_COORDINATION)
-    // This used to pick an index version from 7.0.0 to 8.9.0. The minimum now is 8.0.0 but it's not clear what the upper range should be
     protected void maybeInitWithOldSnapshotVersion(String repoName, Path repoPath) throws Exception {
         if (randomBoolean() && randomBoolean()) {
             initWithSnapshotVersion(
                 repoName,
                 repoPath,
-                IndexVersionUtils.randomVersionBetween(random(), IndexVersions.MINIMUM_COMPATIBLE, IndexVersions.V_8_9_0)
+                IndexVersionUtils.randomVersionBetween(random(), IndexVersions.V_7_0_0, IndexVersions.V_8_9_0)
             );
         }
     }
@@ -515,7 +513,7 @@ public abstract class AbstractSnapshotIntegTestCase extends ESIntegTestCase {
      */
     protected void addBwCFailedSnapshot(String repoName, String snapshotName, Map<String, Object> metadata) throws Exception {
         final ClusterState state = clusterAdmin().prepareState(TEST_REQUEST_TIMEOUT).get().getState();
-        final RepositoriesMetadata repositoriesMetadata = state.metadata().custom(RepositoriesMetadata.TYPE);
+        final RepositoriesMetadata repositoriesMetadata = state.metadata().getProject().custom(RepositoriesMetadata.TYPE);
         assertNotNull(repositoriesMetadata);
         final RepositoryMetadata initialRepoMetadata = repositoriesMetadata.repository(repoName);
         assertNotNull(initialRepoMetadata);
@@ -553,7 +551,7 @@ public abstract class AbstractSnapshotIntegTestCase extends ESIntegTestCase {
                     snapshotInfo,
                     SnapshotsService.OLD_SNAPSHOT_FORMAT,
                     listener,
-                    info -> {}
+                    () -> {}
                 )
             )
         );

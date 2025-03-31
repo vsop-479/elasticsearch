@@ -7,8 +7,12 @@
  * License v3.0 only", or the "Server Side Public License, v 1".
  */
 
+// This module-info is used just to satisfy your IDE.
+// At build and run time, the bridge is patched into the java.base module.
 module org.elasticsearch.entitlement.bridge {
-    uses org.elasticsearch.entitlement.api.EntitlementChecks;
+    requires java.net.http;
+    requires jdk.net;
+    requires java.logging;
 
-    exports org.elasticsearch.entitlement.api;
+    exports org.elasticsearch.entitlement.bridge;
 }

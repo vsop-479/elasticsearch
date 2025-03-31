@@ -186,7 +186,7 @@ public class DateUtils {
 
     /**
      * convert a java time instant to a long value which is stored in lucene
-     * the long value resembles the nanoseconds since the epoch
+     * the long value represents the nanoseconds since the epoch
      *
      * @param instant the instant to convert
      * @return        the nano seconds and seconds as a single long
@@ -206,9 +206,34 @@ public class DateUtils {
     }
 
     /**
+     * Convert a java time instant to a long value which is stored in lucene,
+     * the long value represents the milliseconds since epoch
+     *
+     * @param instant the instant to convert
+     * @return        the total milliseconds as a single long
+     */
+    public static long toLongMillis(Instant instant) {
+        try {
+            return instant.toEpochMilli();
+        } catch (ArithmeticException e) {
+            if (instant.isAfter(Instant.now())) {
+                throw new IllegalArgumentException(
+                    "date[" + instant + "] is too far in the future to be represented in a long milliseconds variable",
+                    e
+                );
+            } else {
+                throw new IllegalArgumentException(
+                    "date[" + instant + "] is too far in the past to be represented in a long milliseconds variable",
+                    e
+                );
+            }
+        }
+    }
+
+    /**
      * Returns an instant that is with valid nanosecond resolution. If
      * the parameter is before the valid nanosecond range then this returns
-     * the minimum {@linkplain Instant} valid for nanosecond resultion. If
+     * the minimum {@linkplain Instant} valid for nanosecond resolution. If
      * the parameter is after the valid nanosecond range then this returns
      * the maximum {@linkplain Instant} valid for nanosecond resolution.
      * <p>
@@ -291,6 +316,37 @@ public class DateUtils {
         }
 
         return nanoSecondsSinceEpoch / 1_000_000;
+    }
+
+    /**
+     * Compare an epoch nanosecond date (such as returned by {@link DateUtils#toLong}
+     * to an epoch millisecond date (such as returned by {@link Instant#toEpochMilli()}}.
+     * <p>
+     * NB: This function does not implement {@link java.util.Comparator} in
+     * order to avoid performance costs of autoboxing the input longs.
+     *
+     * @param nanos Epoch date represented as a long number of nanoseconds.
+     *              Note that Elasticsearch does not support nanosecond dates
+     *              before Epoch, so this number should never be negative.
+     * @param millis Epoch date represented as a long number of milliseconds.
+     *               This parameter does not have to be constrained to the
+     *               range of long nanosecond dates.
+     * @return -1 if the nanosecond date is before the millisecond date,
+     *         0  if the two dates represent the same instant,
+     *         1  if the nanosecond date is after the millisecond date
+     */
+    public static int compareNanosToMillis(long nanos, long millis) {
+        assert nanos >= 0;
+        if (millis < 0) {
+            return 1;
+        }
+        if (millis > MAX_NANOSECOND_IN_MILLIS) {
+            return -1;
+        }
+        // This can't overflow, because we know millis is between 0 and MAX_NANOSECOND_IN_MILLIS,
+        // and MAX_NANOSECOND_IN_MILLIS * 1_000_000 doesn't overflow.
+        long diff = nanos - (millis * 1_000_000);
+        return diff == 0 ? 0 : diff < 0 ? -1 : 1;
     }
 
     /**

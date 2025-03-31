@@ -8,6 +8,7 @@
 package org.elasticsearch.xpack.esql.action;
 
 import org.elasticsearch.Build;
+import org.elasticsearch.cluster.metadata.DataStream;
 import org.elasticsearch.common.util.FeatureFlag;
 import org.elasticsearch.features.NodeFeature;
 import org.elasticsearch.rest.action.admin.cluster.RestNodesCapabilitiesAction;
@@ -20,6 +21,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
+import static org.elasticsearch.xpack.esql.core.plugin.EsqlCorePlugin.AGGREGATE_METRIC_DOUBLE_FEATURE_FLAG;
+
 /**
  * A {@link Set} of "capabilities" supported by the {@link RestEsqlQueryAction}
  * and {@link RestEsqlAsyncQueryAction} APIs. These are exposed over the
@@ -27,6 +30,139 @@ import java.util.Set;
  */
 public class EsqlCapabilities {
     public enum Cap {
+        /**
+         * Introduction of {@code MV_SORT}, {@code MV_SLICE}, and {@code MV_ZIP}.
+         * Added in #106095.
+         */
+        MV_SORT,
+
+        /**
+         * When we disabled some broken optimizations around {@code nullable}.
+         * Fixed in #105691.
+         */
+        DISABLE_NULLABLE_OPTS,
+
+        /**
+         * Introduction of {@code ST_X} and {@code ST_Y}. Added in #105768.
+         */
+        ST_X_Y,
+
+        /**
+         * Changed precision of {@code geo_point} and {@code cartesian_point} fields, by loading from source into WKB. Done in #103691.
+         */
+        SPATIAL_POINTS_FROM_SOURCE,
+
+        /**
+         * Support for loading {@code geo_shape} and {@code cartesian_shape} fields. Done in #104269.
+         */
+        SPATIAL_SHAPES,
+
+        /**
+         * Support for spatial aggregation {@code ST_CENTROID}. Done in #104269.
+         */
+        ST_CENTROID_AGG,
+
+        /**
+         * Support for spatial aggregation {@code ST_INTERSECTS}. Done in #104907.
+         */
+        ST_INTERSECTS,
+
+        /**
+         * Support for spatial aggregation {@code ST_CONTAINS} and {@code ST_WITHIN}. Done in #106503.
+         */
+        ST_CONTAINS_WITHIN,
+
+        /**
+         * Support for spatial aggregation {@code ST_DISJOINT}. Done in #107007.
+         */
+        ST_DISJOINT,
+
+        /**
+         * The introduction of the {@code VALUES} agg.
+         */
+        AGG_VALUES,
+
+        /**
+         * Expand the {@code VALUES} agg to cover spatial types.
+         */
+        AGG_VALUES_SPATIAL,
+
+        /**
+         * Does ESQL support async queries.
+         */
+        ASYNC_QUERY,
+
+        /**
+         * Does ESQL support FROM OPTIONS?
+         */
+        @Deprecated
+        FROM_OPTIONS,
+
+        /**
+         * Cast string literals to a desired data type.
+         */
+        STRING_LITERAL_AUTO_CASTING,
+
+        /**
+         * Base64 encoding and decoding functions.
+         */
+        BASE64_DECODE_ENCODE,
+
+        /**
+         * Support for the :: casting operator
+         */
+        CASTING_OPERATOR,
+
+        /**
+         * Support for the ::date casting operator
+         */
+        CASTING_OPERATOR_FOR_DATE,
+
+        /**
+         * Blocks can be labelled with {@link org.elasticsearch.compute.data.Block.MvOrdering#SORTED_ASCENDING} for optimizations.
+         */
+        MV_ORDERING_SORTED_ASCENDING,
+
+        /**
+         * Support for metrics counter fields
+         */
+        METRICS_COUNTER_FIELDS,
+
+        /**
+         * Cast string literals to a desired data type for IN predicate and more types for BinaryComparison.
+         */
+        STRING_LITERAL_AUTO_CASTING_EXTENDED,
+        /**
+         * Support for metadata fields.
+         */
+        METADATA_FIELDS,
+
+        /**
+         * Support specifically for *just* the _index METADATA field. Used by CsvTests, since that is the only metadata field currently
+         * supported.
+         */
+        INDEX_METADATA_FIELD,
+
+        /**
+         * Support for timespan units abbreviations
+         */
+        TIMESPAN_ABBREVIATIONS,
+
+        /**
+         * Support metrics counter types
+         */
+        COUNTER_TYPES,
+
+        /**
+         * Support for function {@code BIT_LENGTH}. Done in #115792
+         */
+        FN_BIT_LENGTH,
+
+        /**
+         * Support for function {@code BYTE_LENGTH}.
+         */
+        FN_BYTE_LENGTH,
+
         /**
          * Support for function {@code REVERSE}.
          */
@@ -73,6 +209,16 @@ public class EsqlCapabilities {
          * Fix on function {@code SUBSTRING} that makes it not return null on empty strings.
          */
         FN_SUBSTRING_EMPTY_NULL,
+
+        /**
+         * Fixes on function {@code ROUND} that avoid it throwing exceptions on runtime for unsigned long cases.
+         */
+        FN_ROUND_UL_FIXES,
+
+        /**
+         * Fixes for multiple functions not serializing their source, and emitting warnings with wrong line number and text.
+         */
+        FUNCTIONS_SOURCE_SERIALIZATION_WARNINGS,
 
         /**
          * All functions that take TEXT should never emit TEXT, only KEYWORD. #114334
@@ -130,6 +276,12 @@ public class EsqlCapabilities {
         CASE_MV,
 
         /**
+         * Support for loading values over enrich. This is supported by all versions of ESQL but not
+         * the unit test CsvTests.
+         */
+        ENRICH_LOAD,
+
+        /**
          * Optimization for ST_CENTROID changed some results in cartesian data. #108713
          */
         ST_CENTROID_AGG_OPTIMIZED,
@@ -168,9 +320,20 @@ public class EsqlCapabilities {
         UNION_TYPES,
 
         /**
+         * Support unmapped using the INSIST keyword.
+         */
+        UNMAPPED_FIELDS(Build.current().isSnapshot()),
+
+        /**
          * Support for function {@code ST_DISTANCE}. Done in #108764.
          */
         ST_DISTANCE,
+
+        /** Support for function {@code ST_EXTENT_AGG}. */
+        ST_EXTENT_AGG,
+
+        /** Optimization of ST_EXTENT_AGG with doc-values as IntBlock. */
+        ST_EXTENT_AGG_DOCVALUES,
 
         /**
          * Fix determination of CRS types in spatial functions when folding.
@@ -196,6 +359,11 @@ public class EsqlCapabilities {
          * Fix for spatial centroid when no records are found.
          */
         SPATIAL_CENTROID_NO_RECORDS,
+
+        /**
+         * Support ST_ENVELOPE function (and related ST_XMIN, etc.).
+         */
+        ST_ENVELOPE,
 
         /**
          * Fix to GROK and DISSECT that allows extracting attributes with the same name as the input
@@ -241,6 +409,12 @@ public class EsqlCapabilities {
         UNION_TYPES_FIX_RENAME_RESOLUTION,
 
         /**
+         * Execute `RENAME` operations sequentially from left to right,
+         * see <a href="https://github.com/elastic/elasticsearch/issues/122250"> ESQL: Align RENAME behavior with EVAL for sequential processing #122250 </a>
+         */
+        RENAME_SEQUENTIAL_PROCESSING,
+
+        /**
          * Fix for union-types when some indexes are missing the required field. Done in #111932.
          */
         UNION_TYPES_MISSING_FIELD,
@@ -257,6 +431,12 @@ public class EsqlCapabilities {
         FIX_PARSING_LARGE_NEGATIVE_NUMBERS,
 
         /**
+         * Fix precision of scaled_float field values retrieved from stored source
+         * see <a href="https://github.com/elastic/elasticsearch/issues/122547"> Slight inconsistency in ESQL using scaled_float field #122547 </a>
+         */
+        FIX_PRECISION_OF_SCALED_FLOAT_FIELDS,
+
+        /**
          * Fix the status code returned when trying to run count_distinct on the _source type (which is not supported).
          * see <a href="https://github.com/elastic/elasticsearch/issues/105240">count_distinct(_source) returns a 500 response</a>
          */
@@ -266,6 +446,11 @@ public class EsqlCapabilities {
          * Use RangeQuery for BinaryComparison on DateTime fields.
          */
         RANGEQUERY_FOR_DATETIME,
+
+        /**
+         * Enforce strict type checking on ENRICH range types, and warnings for KEYWORD parsing at runtime. Done in #115091.
+         */
+        ENRICH_STRICT_RANGE_TYPES,
 
         /**
          * Fix for non-unique attribute names in ROW and logical plans.
@@ -289,9 +474,9 @@ public class EsqlCapabilities {
         MV_PSERIES_WEIGHTED_SUM,
 
         /**
-         * Support for match operator
+         * Support for match operator as a colon. Previous support for match operator as MATCH has been removed
          */
-        MATCH_OPERATOR(Build.current().isSnapshot()),
+        MATCH_OPERATOR_COLON,
 
         /**
          * Removing support for the {@code META} keyword.
@@ -306,22 +491,78 @@ public class EsqlCapabilities {
         /**
          * Support for nanosecond dates as a data type
          */
-        DATE_NANOS_TYPE(EsqlCorePlugin.DATE_NANOS_FEATURE_FLAG),
+        DATE_NANOS_TYPE(),
 
         /**
          * Support for to_date_nanos function
          */
-        TO_DATE_NANOS(EsqlCorePlugin.DATE_NANOS_FEATURE_FLAG),
+        TO_DATE_NANOS(),
 
+        /**
+         * Support for date nanos type in binary comparisons
+         */
+        DATE_NANOS_BINARY_COMPARISON(),
+
+        /**
+         * Support for mixed comparisons between nanosecond and millisecond dates
+         */
+        DATE_NANOS_COMPARE_TO_MILLIS(),
+        /**
+         * Support implicit casting of strings to date nanos
+         */
+        DATE_NANOS_IMPLICIT_CASTING(),
         /**
          * Support Least and Greatest functions on Date Nanos type
          */
-        LEAST_GREATEST_FOR_DATENANOS(EsqlCorePlugin.DATE_NANOS_FEATURE_FLAG),
+        LEAST_GREATEST_FOR_DATENANOS(),
+        /**
+         * support date extract function for date nanos
+         */
+        DATE_NANOS_DATE_EXTRACT(),
+        /**
+         * Support add and subtract on date nanos
+         */
+        DATE_NANOS_ADD_SUBTRACT(),
+        /**
+         * Support for date_trunc function on date nanos type
+         */
+        DATE_TRUNC_DATE_NANOS(),
+
+        /**
+         * Support date nanos values as the field argument to bucket
+         */
+        DATE_NANOS_BUCKET(),
 
         /**
          * support aggregations on date nanos
          */
-        DATE_NANOS_AGGREGATIONS(EsqlCorePlugin.DATE_NANOS_FEATURE_FLAG),
+        DATE_NANOS_AGGREGATIONS(),
+
+        /**
+         * Support the {@link org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.In} operator for date nanos
+         */
+        DATE_NANOS_IN_OPERATOR(),
+        /**
+         * Support running date format function on nanosecond dates
+         */
+        DATE_NANOS_DATE_FORMAT(),
+        /**
+         * support date diff function on date nanos type, and mixed nanos/millis
+         */
+        DATE_NANOS_DATE_DIFF(),
+        /**
+         * Indicates that https://github.com/elastic/elasticsearch/issues/125439 (incorrect lucene push down for date nanos) is fixed
+         */
+        FIX_DATE_NANOS_LUCENE_PUSHDOWN_BUG(),
+        /**
+         * Fixes a bug where dates are incorrectly formatted if a where clause compares nanoseconds to both milliseconds and nanoseconds,
+         * e.g. {@code WHERE millis > to_datenanos("2023-10-23T12:15:03.360103847") AND millis < to_datetime("2023-10-23T13:53:55.832")}
+         */
+        FIX_DATE_NANOS_MIXED_RANGE_PUSHDOWN_BUG(),
+        /**
+         * DATE_PARSE supports reading timezones
+         */
+        DATE_PARSE_TZ(),
 
         /**
          * Support for datetime in least and greatest functions
@@ -371,8 +612,12 @@ public class EsqlCapabilities {
         /**
          * Supported the text categorization function "CATEGORIZE".
          */
-        CATEGORIZE(Build.current().isSnapshot()),
+        CATEGORIZE_V5,
 
+        /**
+         * Support for multiple groupings in "CATEGORIZE".
+         */
+        CATEGORIZE_MULTIPLE_GROUPINGS,
         /**
          * QSTR function
          */
@@ -382,6 +627,20 @@ public class EsqlCapabilities {
          * MATCH function
          */
         MATCH_FUNCTION,
+
+        /**
+         * KQL function
+         */
+        KQL_FUNCTION,
+
+        /**
+         * Hash function
+         */
+        HASH_FUNCTION,
+        /**
+         * Hash function aliases such as MD5
+         */
+        HASH_FUNCTION_ALIASES_V1,
 
         /**
          * Don't optimize CASE IS NOT NULL function by not requiring the fields to be not null as well.
@@ -400,6 +659,17 @@ public class EsqlCapabilities {
         SORTING_ON_SOURCE_AND_COUNTERS_FORBIDDEN,
 
         /**
+         * Fix {@code SORT} when the {@code _source} field is not a sort key but
+         * <strong>is</strong> being returned.
+         */
+        SORT_RETURNING_SOURCE_OK,
+
+        /**
+         * _source field mapping directives: https://www.elastic.co/guide/en/elasticsearch/reference/current/mapping-source-field.html
+         */
+        SOURCE_FIELD_MAPPING,
+
+        /**
          * Allow filter per individual aggregation.
          */
         PER_AGG_FILTERING,
@@ -408,6 +678,11 @@ public class EsqlCapabilities {
          * Fix {@link #PER_AGG_FILTERING} grouped by ordinals.
          */
         PER_AGG_FILTERING_ORDS,
+
+        /**
+         * Support for {@code STD_DEV} aggregation.
+         */
+        STD_DEV,
 
         /**
          * Fix for https://github.com/elastic/elasticsearch/issues/114714
@@ -429,6 +704,12 @@ public class EsqlCapabilities {
         FIX_FILTER_PUSHDOWN_PAST_STATS,
 
         /**
+         * Send warnings on STATS alias collision
+         * https://github.com/elastic/elasticsearch/issues/114970
+         */
+        STATS_ALIAS_COLLISION_WARNINGS,
+
+        /**
          * This enables 60_usage.yml "Basic ESQL usage....snapshot" version test. See also the next capability.
          */
         SNAPSHOT_TEST_FOR_TELEMETRY(Build.current().isSnapshot()),
@@ -441,19 +722,227 @@ public class EsqlCapabilities {
         /**
          * Support simplified syntax for named parameters for field and function names.
          */
-        NAMED_PARAMETER_FOR_FIELD_AND_FUNCTION_NAMES_SIMPLIFIED_SYNTAX(Build.current().isSnapshot()),
+        NAMED_PARAMETER_FOR_FIELD_AND_FUNCTION_NAMES_SIMPLIFIED_SYNTAX(),
 
         /**
          * Fix pushdown of LIMIT past MV_EXPAND
          */
         ADD_LIMIT_INSIDE_MV_EXPAND,
 
+        DELAY_DEBUG_FN(Build.current().isSnapshot()),
+
+        /** Capability for remote metadata test */
+        METADATA_FIELDS_REMOTE_TEST(false),
         /**
          * WIP on Join planning
          * - Introduce BinaryPlan and co
          * - Refactor INLINESTATS and LOOKUP as a JOIN block
          */
-        JOIN_PLANNING_V1(Build.current().isSnapshot());
+        JOIN_PLANNING_V1(Build.current().isSnapshot()),
+
+        /**
+         * Support implicit casting from string literal to DATE_PERIOD or TIME_DURATION.
+         */
+        IMPLICIT_CASTING_STRING_LITERAL_TO_TEMPORAL_AMOUNT,
+
+        /**
+         * LOOKUP JOIN
+         */
+        JOIN_LOOKUP_V12,
+
+        /**
+         * LOOKUP JOIN with TEXT fields on the right (right side of the join) (#119473)
+         */
+        LOOKUP_JOIN_TEXT(JOIN_LOOKUP_V12.isEnabled()),
+
+        /**
+         * LOOKUP JOIN skipping MVs and sending warnings (https://github.com/elastic/elasticsearch/issues/118780)
+         */
+        JOIN_LOOKUP_SKIP_MV_WARNINGS(JOIN_LOOKUP_V12.isEnabled()),
+
+        /**
+         * Fix pushing down LIMIT past LOOKUP JOIN in case of multiple matching join keys.
+         */
+        JOIN_LOOKUP_FIX_LIMIT_PUSHDOWN(JOIN_LOOKUP_V12.isEnabled()),
+
+        /**
+         * Fix for https://github.com/elastic/elasticsearch/issues/117054
+         */
+        FIX_NESTED_FIELDS_NAME_CLASH_IN_INDEXRESOLVER,
+
+        /**
+         * support for aggregations on semantic_text
+         */
+        SEMANTIC_TEXT_AGGREGATIONS(EsqlCorePlugin.SEMANTIC_TEXT_FEATURE_FLAG),
+
+        /**
+         * Fix for https://github.com/elastic/elasticsearch/issues/114714, again
+         */
+        FIX_STATS_BY_FOLDABLE_EXPRESSION_2,
+
+        /**
+         * Support the "METADATA _score" directive to enable _score column.
+         */
+        METADATA_SCORE,
+
+        /**
+         * Term function
+         */
+        TERM_FUNCTION(Build.current().isSnapshot()),
+
+        /**
+         * Additional types for match function and operator
+         */
+        MATCH_ADDITIONAL_TYPES,
+
+        /**
+         * Fix for regex folding with case-insensitive pattern https://github.com/elastic/elasticsearch/issues/118371
+         */
+        FIXED_REGEX_FOLD,
+
+        /**
+         * Full text functions can be used in disjunctions
+         */
+        FULL_TEXT_FUNCTIONS_DISJUNCTIONS,
+
+        /**
+         * Change field caps response for semantic_text fields to be reported as text
+         */
+        SEMANTIC_TEXT_FIELD_CAPS,
+
+        /**
+         * Support named argument for function in map format.
+         */
+        OPTIONAL_NAMED_ARGUMENT_MAP_FOR_FUNCTION(Build.current().isSnapshot()),
+
+        /**
+         * Disabled support for index aliases in lookup joins
+         */
+        LOOKUP_JOIN_NO_ALIASES(JOIN_LOOKUP_V12.isEnabled()),
+
+        /**
+         * Full text functions can be used in disjunctions as they are implemented in compute engine
+         */
+        FULL_TEXT_FUNCTIONS_DISJUNCTIONS_COMPUTE_ENGINE,
+
+        /**
+         * Support match options in match function
+         */
+        MATCH_FUNCTION_OPTIONS,
+
+        /**
+         * Support options in the query string function.
+         */
+        QUERY_STRING_FUNCTION_OPTIONS,
+
+        /**
+         * Support for aggregate_metric_double type
+         */
+        AGGREGATE_METRIC_DOUBLE(AGGREGATE_METRIC_DOUBLE_FEATURE_FLAG),
+
+        /**
+         * Support for partial subset of metrics in aggregate_metric_double type
+         */
+        AGGREGATE_METRIC_DOUBLE_PARTIAL_SUBMETRICS(AGGREGATE_METRIC_DOUBLE_FEATURE_FLAG),
+
+        /**
+         * Support change point detection "CHANGE_POINT".
+         */
+        CHANGE_POINT(Build.current().isSnapshot()),
+
+        /**
+         * Fix for https://github.com/elastic/elasticsearch/issues/120817
+         * and https://github.com/elastic/elasticsearch/issues/120803
+         * Support for queries that have multiple SORTs that cannot become TopN
+         */
+        REMOVE_REDUNDANT_SORT,
+
+        /**
+         * Fixes a series of issues with inlinestats which had an incomplete implementation after lookup and inlinestats
+         * were refactored.
+         */
+        INLINESTATS_V5(EsqlPlugin.INLINESTATS_FEATURE_FLAG),
+
+        /**
+         * Support partial_results
+         */
+        SUPPORT_PARTIAL_RESULTS,
+
+        /**
+         * Support for rendering aggregate_metric_double type
+         */
+        AGGREGATE_METRIC_DOUBLE_RENDERING(AGGREGATE_METRIC_DOUBLE_FEATURE_FLAG),
+
+        /**
+         * Support for FORK command
+         */
+        FORK(Build.current().isSnapshot()),
+
+        /**
+         * Allow mixed numeric types in conditional functions - case, greatest and least
+         */
+        MIXED_NUMERIC_TYPES_IN_CASE_GREATEST_LEAST,
+
+        /**
+         * Support for RRF command
+         */
+        RRF(Build.current().isSnapshot()),
+
+        /**
+         * Lucene query pushdown to StartsWith and EndsWith functions.
+         * This capability was created to avoid receiving wrong warnings from old nodes in mixed clusters
+         */
+        STARTS_WITH_ENDS_WITH_LUCENE_PUSHDOWN,
+
+        /**
+         * Full text functions can be scored when being part of a disjunction
+         */
+        FULL_TEXT_FUNCTIONS_DISJUNCTIONS_SCORE,
+
+        /**
+         * Do {@code TO_LOWER} and {@code TO_UPPER} process all field values?
+         */
+        TO_LOWER_MV,
+
+        /**
+         * Use double parameter markers to represent field or function names.
+         */
+        DOUBLE_PARAMETER_MARKERS_FOR_IDENTIFIERS,
+
+        /**
+         * Non full text functions do not contribute to score
+         */
+        NON_FULL_TEXT_FUNCTIONS_SCORING,
+
+        /**
+         * Support for to_aggregate_metric_double function
+         */
+        AGGREGATE_METRIC_DOUBLE_CONVERT_TO(AGGREGATE_METRIC_DOUBLE_FEATURE_FLAG),
+
+        /**
+         * The {@code _query} API now reports the original types.
+         */
+        REPORT_ORIGINAL_TYPES,
+
+        /**
+         * The metrics command
+         */
+        METRICS_COMMAND(Build.current().isSnapshot()),
+
+        /**
+         * Index component selector syntax (my-data-stream-name::failures)
+         */
+        INDEX_COMPONENT_SELECTORS(DataStream.isFailureStoreFeatureFlagEnabled()),
+
+        /**
+         * Make numberOfChannels consistent with layout in DefaultLayout by removing duplicated ChannelSet.
+         */
+        MAKE_NUMBER_OF_CHANNELS_CONSISTENT_WITH_LAYOUT,
+
+        /**
+         * Support for sorting when aggregate_metric_doubles are present
+         */
+        AGGREGATE_METRIC_DOUBLE_SORTING(AGGREGATE_METRIC_DOUBLE_FEATURE_FLAG);
 
         private final boolean enabled;
 
@@ -497,9 +986,6 @@ public class EsqlCapabilities {
          * Add all of our cluster features without the leading "esql."
          */
         for (NodeFeature feature : new EsqlFeatures().getFeatures()) {
-            caps.add(cap(feature));
-        }
-        for (NodeFeature feature : new EsqlFeatures().getHistoricalFeatures().keySet()) {
             caps.add(cap(feature));
         }
         return Set.copyOf(caps);

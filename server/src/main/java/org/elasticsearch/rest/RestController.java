@@ -34,6 +34,7 @@ import org.elasticsearch.core.Releasables;
 import org.elasticsearch.core.RestApiVersion;
 import org.elasticsearch.core.Streams;
 import org.elasticsearch.core.TimeValue;
+import org.elasticsearch.core.UpdateForV10;
 import org.elasticsearch.http.HttpHeadersValidationException;
 import org.elasticsearch.http.HttpRouteStats;
 import org.elasticsearch.http.HttpRouteStatsTracker;
@@ -93,6 +94,7 @@ public class RestController implements HttpServerTransport.Dispatcher {
     public static final String STATUS_CODE_KEY = "es_rest_status_code";
     public static final String HANDLER_NAME_KEY = "es_rest_handler_name";
     public static final String REQUEST_METHOD_KEY = "es_rest_request_method";
+    public static final boolean ERROR_TRACE_DEFAULT = false;
 
     static {
         try (InputStream stream = RestController.class.getResourceAsStream("/config/favicon.ico")) {
@@ -432,10 +434,6 @@ public class RestController implements HttpServerTransport.Dispatcher {
             }
             // iff we could reserve bytes for the request we need to send the response also over this channel
             responseChannel = new ResourceHandlingHttpChannel(channel, circuitBreakerService, contentLength, methodHandlers);
-            // TODO: Count requests double in the circuit breaker if they need copying?
-            if (handler.allowsUnsafeBuffers() == false) {
-                request.ensureSafeBuffers();
-            }
 
             if (handler.allowSystemIndexAccessByDefault() == false) {
                 // The ELASTIC_PRODUCT_ORIGIN_HTTP_HEADER indicates that the request is coming from an Elastic product and
@@ -642,7 +640,7 @@ public class RestController implements HttpServerTransport.Dispatcher {
     private static void validateErrorTrace(RestRequest request, RestChannel channel) {
         // error_trace cannot be used when we disable detailed errors
         // we consume the error_trace parameter first to ensure that it is always consumed
-        if (request.paramAsBoolean("error_trace", false) && channel.detailedErrorsEnabled() == false) {
+        if (request.paramAsBoolean("error_trace", ERROR_TRACE_DEFAULT) && channel.detailedErrorsEnabled() == false) {
             throw new IllegalArgumentException("error traces in responses are disabled.");
         }
     }
@@ -877,12 +875,17 @@ public class RestController implements HttpServerTransport.Dispatcher {
         }
     }
 
+    // exposed for tests; marked as UpdateForV10 because this assertion should have flushed out all double-close bugs by the time v10 is
+    // released so we should be able to drop the tests that check we behave reasonably in production on this impossible path
+    @UpdateForV10(owner = UpdateForV10.Owner.DISTRIBUTED_COORDINATION)
+    static boolean PERMIT_DOUBLE_RESPONSE = false;
+
     private static final class ResourceHandlingHttpChannel extends DelegatingRestChannel {
         private final CircuitBreakerService circuitBreakerService;
         private final int contentLength;
         private final HttpRouteStatsTracker statsTracker;
         private final long startTime;
-        private final AtomicBoolean closed = new AtomicBoolean();
+        private final AtomicBoolean responseSent = new AtomicBoolean();
 
         ResourceHandlingHttpChannel(
             RestChannel delegate,
@@ -901,7 +904,14 @@ public class RestController implements HttpServerTransport.Dispatcher {
         public void sendResponse(RestResponse response) {
             boolean success = false;
             try {
-                close();
+                // protect against double-response bugs
+                if (responseSent.compareAndSet(false, true) == false) {
+                    final var message = "have already sent a response to this request, cannot send another";
+                    assert PERMIT_DOUBLE_RESPONSE : message;
+                    throw new IllegalStateException(message);
+                }
+                inFlightRequestsBreaker(circuitBreakerService).addWithoutBreaking(-contentLength);
+
                 statsTracker.addRequestStats(contentLength);
                 statsTracker.addResponseTime(rawRelativeTimeInMillis() - startTime);
                 if (response.isChunked() == false) {
@@ -931,14 +941,6 @@ public class RestController implements HttpServerTransport.Dispatcher {
 
         private static long rawRelativeTimeInMillis() {
             return TimeValue.nsecToMSec(System.nanoTime());
-        }
-
-        private void close() {
-            // attempt to close once atomically
-            if (closed.compareAndSet(false, true) == false) {
-                throw new IllegalStateException("Channel is already closed");
-            }
-            inFlightRequestsBreaker(circuitBreakerService).addWithoutBreaking(-contentLength);
         }
     }
 

@@ -54,7 +54,11 @@ public final class OrdinalBytesRefBlock extends AbstractNonThreadSafeRefCounted 
      * Returns true if this ordinal block is dense enough to enable optimizations using its ordinals
      */
     public boolean isDense() {
-        return ordinals.getTotalValueCount() * 2 / 3 >= bytes.getPositionCount();
+        return isDense(bytes.getPositionCount(), ordinals.getTotalValueCount());
+    }
+
+    public static boolean isDense(int totalPositions, int numOrdinals) {
+        return numOrdinals * 2L / 3L >= totalPositions;
     }
 
     public IntBlock getOrdinalsBlock() {
@@ -245,5 +249,10 @@ public final class OrdinalBytesRefBlock extends AbstractNonThreadSafeRefCounted 
     @Override
     public long ramBytesUsed() {
         return ordinals.ramBytesUsed() + bytes.ramBytesUsed();
+    }
+
+    @Override
+    public String toString() {
+        return getClass().getSimpleName() + "[ordinals=" + ordinals + ", bytes=" + bytes + "]";
     }
 }

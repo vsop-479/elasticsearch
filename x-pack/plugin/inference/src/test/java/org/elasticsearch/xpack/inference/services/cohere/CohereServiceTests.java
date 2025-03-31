@@ -20,8 +20,7 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentHelper;
 import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper;
-import org.elasticsearch.inference.ChunkedInferenceServiceResults;
-import org.elasticsearch.inference.ChunkingOptions;
+import org.elasticsearch.inference.ChunkedInference;
 import org.elasticsearch.inference.ChunkingSettings;
 import org.elasticsearch.inference.InferenceServiceConfiguration;
 import org.elasticsearch.inference.InferenceServiceResults;
@@ -36,10 +35,10 @@ import org.elasticsearch.test.http.MockWebServer;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.xcontent.ToXContent;
 import org.elasticsearch.xcontent.XContentType;
-import org.elasticsearch.xpack.core.inference.ChunkingSettingsFeatureFlag;
 import org.elasticsearch.xpack.core.inference.action.InferenceAction;
-import org.elasticsearch.xpack.core.inference.results.InferenceChunkedTextEmbeddingByteResults;
-import org.elasticsearch.xpack.core.inference.results.InferenceChunkedTextEmbeddingFloatResults;
+import org.elasticsearch.xpack.core.inference.results.ChunkedInferenceEmbedding;
+import org.elasticsearch.xpack.core.inference.results.TextEmbeddingByteResults;
+import org.elasticsearch.xpack.core.inference.results.TextEmbeddingFloatResults;
 import org.elasticsearch.xpack.inference.external.http.HttpClientManager;
 import org.elasticsearch.xpack.inference.external.http.sender.HttpRequestSender;
 import org.elasticsearch.xpack.inference.external.http.sender.HttpRequestSenderTests;
@@ -60,6 +59,7 @@ import org.junit.After;
 import org.junit.Before;
 
 import java.io.IOException;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -67,6 +67,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.elasticsearch.common.xcontent.XContentHelper.toXContent;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertToXContentEquivalent;
+import static org.elasticsearch.xpack.core.inference.results.TextEmbeddingFloatResultsTests.buildExpectationFloat;
 import static org.elasticsearch.xpack.inference.Utils.getInvalidModel;
 import static org.elasticsearch.xpack.inference.Utils.getPersistedConfigMap;
 import static org.elasticsearch.xpack.inference.Utils.inferenceUtilityPool;
@@ -75,7 +76,6 @@ import static org.elasticsearch.xpack.inference.chunking.ChunkingSettingsTests.c
 import static org.elasticsearch.xpack.inference.chunking.ChunkingSettingsTests.createRandomChunkingSettingsMap;
 import static org.elasticsearch.xpack.inference.external.http.Utils.entityAsMap;
 import static org.elasticsearch.xpack.inference.external.http.Utils.getUrl;
-import static org.elasticsearch.xpack.inference.results.TextEmbeddingResultsTests.buildExpectationFloat;
 import static org.elasticsearch.xpack.inference.services.ServiceComponentsTests.createWithEmptySettings;
 import static org.elasticsearch.xpack.inference.services.cohere.embeddings.CohereEmbeddingsTaskSettingsTests.getTaskSettingsMap;
 import static org.elasticsearch.xpack.inference.services.cohere.embeddings.CohereEmbeddingsTaskSettingsTests.getTaskSettingsMapEmpty;
@@ -141,29 +141,7 @@ public class CohereServiceTests extends ESTestCase {
         }
     }
 
-    public void testParseRequestConfig_ThrowsElasticsearchStatusExceptionWhenChunkingSettingsProvidedAndFeatureFlagDisabled()
-        throws IOException {
-        assumeTrue("Only if 'inference_chunking_settings' feature flag is disabled", ChunkingSettingsFeatureFlag.isEnabled() == false);
-        try (var service = createCohereService()) {
-            var serviceSettings = CohereEmbeddingsServiceSettingsTests.getServiceSettingsMap("url", "model", null);
-
-            var config = getRequestConfigMap(
-                serviceSettings,
-                getTaskSettingsMap(null, null),
-                createRandomChunkingSettingsMap(),
-                getSecretSettingsMap("secret")
-            );
-
-            var failureListener = ActionListener.<Model>wrap((model) -> fail("Model parsing should have failed"), e -> {
-                MatcherAssert.assertThat(e, instanceOf(ElasticsearchStatusException.class));
-                MatcherAssert.assertThat(e.getMessage(), containsString("Model configuration contains settings"));
-            });
-            service.parseRequestConfig("id", TaskType.TEXT_EMBEDDING, config, failureListener);
-        }
-    }
-
-    public void testParseRequestConfig_CreatesACohereEmbeddingsModelWhenChunkingSettingsProvidedAndFeatureFlagEnabled() throws IOException {
-        assumeTrue("Only if 'inference_chunking_settings' feature flag is enabled", ChunkingSettingsFeatureFlag.isEnabled());
+    public void testParseRequestConfig_CreatesACohereEmbeddingsModelWhenChunkingSettingsProvided() throws IOException {
         try (var service = createCohereService()) {
             ActionListener<Model> modelListener = ActionListener.wrap(model -> {
                 MatcherAssert.assertThat(model, instanceOf(CohereEmbeddingsModel.class));
@@ -196,9 +174,7 @@ public class CohereServiceTests extends ESTestCase {
         }
     }
 
-    public void testParseRequestConfig_CreatesACohereEmbeddingsModelWhenChunkingSettingsNotProvidedAndFeatureFlagEnabled()
-        throws IOException {
-        assumeTrue("Only if 'inference_chunking_settings' feature flag is enabled", ChunkingSettingsFeatureFlag.isEnabled());
+    public void testParseRequestConfig_CreatesACohereEmbeddingsModelWhenChunkingSettingsNotProvided() throws IOException {
         try (var service = createCohereService()) {
             ActionListener<Model> modelListener = ActionListener.wrap(model -> {
                 MatcherAssert.assertThat(model, instanceOf(CohereEmbeddingsModel.class));
@@ -405,38 +381,7 @@ public class CohereServiceTests extends ESTestCase {
         }
     }
 
-    public void testParsePersistedConfigWithSecrets_CreatesACohereEmbeddingsModelWithoutChunkingSettingsWhenFeatureFlagDisabled()
-        throws IOException {
-        assumeTrue("Only if 'inference_chunking_settings' feature flag is disabled", ChunkingSettingsFeatureFlag.isEnabled() == false);
-        try (var service = createCohereService()) {
-            var persistedConfig = getPersistedConfigMap(
-                CohereEmbeddingsServiceSettingsTests.getServiceSettingsMap("url", "model", null),
-                getTaskSettingsMap(null, null),
-                createRandomChunkingSettingsMap(),
-                getSecretSettingsMap("secret")
-            );
-
-            var model = service.parsePersistedConfigWithSecrets(
-                "id",
-                TaskType.TEXT_EMBEDDING,
-                persistedConfig.config(),
-                persistedConfig.secrets()
-            );
-
-            MatcherAssert.assertThat(model, instanceOf(CohereEmbeddingsModel.class));
-
-            var embeddingsModel = (CohereEmbeddingsModel) model;
-            MatcherAssert.assertThat(embeddingsModel.getServiceSettings().getCommonSettings().uri().toString(), is("url"));
-            MatcherAssert.assertThat(embeddingsModel.getServiceSettings().getCommonSettings().modelId(), is("model"));
-            MatcherAssert.assertThat(embeddingsModel.getTaskSettings(), is(new CohereEmbeddingsTaskSettings(null, null)));
-            assertNull(embeddingsModel.getConfigurations().getChunkingSettings());
-            MatcherAssert.assertThat(embeddingsModel.getSecretSettings().apiKey().toString(), is("secret"));
-        }
-    }
-
-    public void testParsePersistedConfigWithSecrets_CreatesACohereEmbeddingsModelWhenChunkingSettingsProvidedAndFeatureFlagEnabled()
-        throws IOException {
-        assumeTrue("Only if 'inference_chunking_settings' feature flag is enabled", ChunkingSettingsFeatureFlag.isEnabled());
+    public void testParsePersistedConfigWithSecrets_CreatesACohereEmbeddingsModelWhenChunkingSettingsProvided() throws IOException {
         try (var service = createCohereService()) {
             var persistedConfig = getPersistedConfigMap(
                 CohereEmbeddingsServiceSettingsTests.getServiceSettingsMap("url", "model", null),
@@ -463,9 +408,7 @@ public class CohereServiceTests extends ESTestCase {
         }
     }
 
-    public void testParsePersistedConfigWithSecrets_CreatesACohereEmbeddingsModelWhenChunkingSettingsNotProvidedAndFeatureFlagEnabled()
-        throws IOException {
-        assumeTrue("Only if 'inference_chunking_settings' feature flag is enabled", ChunkingSettingsFeatureFlag.isEnabled());
+    public void testParsePersistedConfigWithSecrets_CreatesACohereEmbeddingsModelWhenChunkingSettingsNotProvided() throws IOException {
         try (var service = createCohereService()) {
             var persistedConfig = getPersistedConfigMap(
                 CohereEmbeddingsServiceSettingsTests.getServiceSettingsMap("url", "model", null),
@@ -693,32 +636,7 @@ public class CohereServiceTests extends ESTestCase {
         }
     }
 
-    public void testParsePersistedConfig_CreatesACohereEmbeddingsModelWithoutChunkingSettingsWhenChunkingSettingsFeatureFlagDisabled()
-        throws IOException {
-        assumeTrue("Only if 'inference_chunking_settings' feature flag is disabled", ChunkingSettingsFeatureFlag.isEnabled() == false);
-        try (var service = createCohereService()) {
-            var persistedConfig = getPersistedConfigMap(
-                CohereEmbeddingsServiceSettingsTests.getServiceSettingsMap("url", "model", null),
-                getTaskSettingsMap(null, CohereTruncation.NONE),
-                createRandomChunkingSettingsMap()
-            );
-
-            var model = service.parsePersistedConfig("id", TaskType.TEXT_EMBEDDING, persistedConfig.config());
-
-            MatcherAssert.assertThat(model, instanceOf(CohereEmbeddingsModel.class));
-
-            var embeddingsModel = (CohereEmbeddingsModel) model;
-            MatcherAssert.assertThat(embeddingsModel.getServiceSettings().getCommonSettings().uri().toString(), is("url"));
-            MatcherAssert.assertThat(embeddingsModel.getServiceSettings().getCommonSettings().modelId(), is("model"));
-            MatcherAssert.assertThat(embeddingsModel.getTaskSettings(), is(new CohereEmbeddingsTaskSettings(null, CohereTruncation.NONE)));
-            assertNull(embeddingsModel.getConfigurations().getChunkingSettings());
-            assertNull(embeddingsModel.getSecretSettings());
-        }
-    }
-
-    public void testParsePersistedConfig_CreatesACohereEmbeddingsModelWhenChunkingSettingsProvidedAndFeatureFlagEnabled()
-        throws IOException {
-        assumeTrue("Only if 'inference_chunking_settings' feature flag is enabled", ChunkingSettingsFeatureFlag.isEnabled());
+    public void testParsePersistedConfig_CreatesACohereEmbeddingsModelWhenChunkingSettingsProvided() throws IOException {
         try (var service = createCohereService()) {
             var persistedConfig = getPersistedConfigMap(
                 CohereEmbeddingsServiceSettingsTests.getServiceSettingsMap("url", "model", null),
@@ -739,9 +657,7 @@ public class CohereServiceTests extends ESTestCase {
         }
     }
 
-    public void testParsePersistedConfig_CreatesACohereEmbeddingsModelWhenChunkingSettingsNotProvidedAndFeatureFlagEnabled()
-        throws IOException {
-        assumeTrue("Only if 'inference_chunking_settings' feature flag is enabled", ChunkingSettingsFeatureFlag.isEnabled());
+    public void testParsePersistedConfig_CreatesACohereEmbeddingsModelWhenChunkingSettingsNotProvided() throws IOException {
         try (var service = createCohereService()) {
             var persistedConfig = getPersistedConfigMap(
                 CohereEmbeddingsServiceSettingsTests.getServiceSettingsMap("url", "model", null),
@@ -872,6 +788,8 @@ public class CohereServiceTests extends ESTestCase {
             service.infer(
                 mockModel,
                 null,
+                null,
+                null,
                 List.of(""),
                 false,
                 new HashMap<>(),
@@ -939,6 +857,8 @@ public class CohereServiceTests extends ESTestCase {
             PlainActionFuture<InferenceServiceResults> listener = new PlainActionFuture<>();
             service.infer(
                 model,
+                null,
+                null,
                 null,
                 List.of("abc"),
                 false,
@@ -1159,6 +1079,53 @@ public class CohereServiceTests extends ESTestCase {
         }
     }
 
+    public void testUpdateModelWithEmbeddingDetails_InvalidModelProvided() throws IOException {
+        var senderFactory = HttpRequestSenderTests.createSenderFactory(threadPool, clientManager);
+
+        try (var service = new CohereService(senderFactory, createWithEmptySettings(threadPool))) {
+            var model = CohereCompletionModelTests.createModel(randomAlphaOfLength(10), randomAlphaOfLength(10), randomAlphaOfLength(10));
+            assertThrows(
+                ElasticsearchStatusException.class,
+                () -> { service.updateModelWithEmbeddingDetails(model, randomNonNegativeInt()); }
+            );
+        }
+    }
+
+    public void testUpdateModelWithEmbeddingDetails_NullSimilarityInOriginalModel() throws IOException {
+        testUpdateModelWithEmbeddingDetails_Successful(null);
+    }
+
+    public void testUpdateModelWithEmbeddingDetails_NonNullSimilarityInOriginalModel() throws IOException {
+        testUpdateModelWithEmbeddingDetails_Successful(randomFrom(SimilarityMeasure.values()));
+    }
+
+    private void testUpdateModelWithEmbeddingDetails_Successful(SimilarityMeasure similarityMeasure) throws IOException {
+        var senderFactory = HttpRequestSenderTests.createSenderFactory(threadPool, clientManager);
+
+        try (var service = new CohereService(senderFactory, createWithEmptySettings(threadPool))) {
+            var embeddingSize = randomNonNegativeInt();
+            var embeddingType = randomFrom(CohereEmbeddingType.values());
+            var model = CohereEmbeddingsModelTests.createModel(
+                randomAlphaOfLength(10),
+                randomAlphaOfLength(10),
+                CohereEmbeddingsTaskSettings.EMPTY_SETTINGS,
+                randomNonNegativeInt(),
+                randomNonNegativeInt(),
+                randomAlphaOfLength(10),
+                embeddingType,
+                similarityMeasure
+            );
+
+            Model updatedModel = service.updateModelWithEmbeddingDetails(model, embeddingSize);
+
+            SimilarityMeasure expectedSimilarityMeasure = similarityMeasure == null
+                ? CohereService.defaultSimilarity(embeddingType)
+                : similarityMeasure;
+            assertEquals(expectedSimilarityMeasure, updatedModel.getServiceSettings().similarity());
+            assertEquals(embeddingSize, updatedModel.getServiceSettings().dimensions().intValue());
+        }
+    }
+
     public void testInfer_UnauthorisedResponse() throws IOException {
         var senderFactory = HttpRequestSenderTests.createSenderFactory(threadPool, clientManager);
 
@@ -1183,6 +1150,8 @@ public class CohereServiceTests extends ESTestCase {
             PlainActionFuture<InferenceServiceResults> listener = new PlainActionFuture<>();
             service.infer(
                 model,
+                null,
+                null,
                 null,
                 List.of("abc"),
                 false,
@@ -1243,6 +1212,8 @@ public class CohereServiceTests extends ESTestCase {
             PlainActionFuture<InferenceServiceResults> listener = new PlainActionFuture<>();
             service.infer(
                 model,
+                null,
+                null,
                 null,
                 List.of("abc"),
                 false,
@@ -1318,6 +1289,8 @@ public class CohereServiceTests extends ESTestCase {
             service.infer(
                 model,
                 null,
+                null,
+                null,
                 List.of("abc"),
                 false,
                 CohereEmbeddingsTaskSettingsTests.getTaskSettingsMap(InputType.SEARCH, null),
@@ -1390,6 +1363,8 @@ public class CohereServiceTests extends ESTestCase {
             service.infer(
                 model,
                 null,
+                null,
+                null,
                 List.of("abc"),
                 false,
                 new HashMap<>(),
@@ -1417,22 +1392,7 @@ public class CohereServiceTests extends ESTestCase {
         }
     }
 
-    public void testChunkedInfer_BatchesCalls() throws IOException {
-        var model = CohereEmbeddingsModelTests.createModel(
-            getUrl(webServer),
-            "secret",
-            new CohereEmbeddingsTaskSettings(null, null),
-            1024,
-            1024,
-            "model",
-            null
-        );
-
-        testChunkedInfer(model);
-    }
-
-    public void testChunkedInfer_BatchesCallsChunkingSettingsSetAndFeatureFlagEnabled() throws IOException {
-        assumeTrue("Only if 'inference_chunking_settings' feature flag is enabled", ChunkingSettingsFeatureFlag.isEnabled());
+    public void testChunkedInfer_BatchesCallsChunkingSettingsSet() throws IOException {
         var model = CohereEmbeddingsModelTests.createModel(
             getUrl(webServer),
             "secret",
@@ -1447,8 +1407,7 @@ public class CohereServiceTests extends ESTestCase {
         testChunkedInfer(model);
     }
 
-    public void testChunkedInfer_ChunkingSettingsNotSetAndFeatureFlagEnabled() throws IOException {
-        assumeTrue("Only if 'inference_chunking_settings' feature flag is enabled", ChunkingSettingsFeatureFlag.isEnabled());
+    public void testChunkedInfer_ChunkingSettingsNotSet() throws IOException {
         var model = CohereEmbeddingsModelTests.createModel(
             getUrl(webServer),
             "secret",
@@ -1500,15 +1459,14 @@ public class CohereServiceTests extends ESTestCase {
                 """;
             webServer.enqueue(new MockResponse().setResponseCode(200).setBody(responseJson));
 
-            PlainActionFuture<List<ChunkedInferenceServiceResults>> listener = new PlainActionFuture<>();
+            PlainActionFuture<List<ChunkedInference>> listener = new PlainActionFuture<>();
             // 2 inputs
             service.chunkedInfer(
                 model,
                 null,
-                List.of("foo", "bar"),
+                List.of("a", "bb"),
                 new HashMap<>(),
                 InputType.UNSPECIFIED,
-                new ChunkingOptions(null, null),
                 InferenceAction.Request.DEFAULT_TIMEOUT,
                 listener
             );
@@ -1516,18 +1474,26 @@ public class CohereServiceTests extends ESTestCase {
             var results = listener.actionGet(TIMEOUT);
             assertThat(results, hasSize(2));
             {
-                assertThat(results.get(0), CoreMatchers.instanceOf(InferenceChunkedTextEmbeddingFloatResults.class));
-                var floatResult = (InferenceChunkedTextEmbeddingFloatResults) results.get(0);
+                assertThat(results.get(0), CoreMatchers.instanceOf(ChunkedInferenceEmbedding.class));
+                var floatResult = (ChunkedInferenceEmbedding) results.get(0);
                 assertThat(floatResult.chunks(), hasSize(1));
-                assertEquals("foo", floatResult.chunks().get(0).matchedText());
-                assertArrayEquals(new float[] { 0.123f, -0.123f }, floatResult.chunks().get(0).embedding(), 0.0f);
+                assertEquals(new ChunkedInference.TextOffset(0, 1), floatResult.chunks().get(0).offset());
+                assertArrayEquals(
+                    new float[] { 0.123f, -0.123f },
+                    ((TextEmbeddingFloatResults.Embedding) floatResult.chunks().get(0).embedding()).values(),
+                    0.0f
+                );
             }
             {
-                assertThat(results.get(1), CoreMatchers.instanceOf(InferenceChunkedTextEmbeddingFloatResults.class));
-                var floatResult = (InferenceChunkedTextEmbeddingFloatResults) results.get(1);
+                assertThat(results.get(1), CoreMatchers.instanceOf(ChunkedInferenceEmbedding.class));
+                var floatResult = (ChunkedInferenceEmbedding) results.get(1);
                 assertThat(floatResult.chunks(), hasSize(1));
-                assertEquals("bar", floatResult.chunks().get(0).matchedText());
-                assertArrayEquals(new float[] { 0.223f, -0.223f }, floatResult.chunks().get(0).embedding(), 0.0f);
+                assertEquals(new ChunkedInference.TextOffset(0, 2), floatResult.chunks().get(0).offset());
+                assertArrayEquals(
+                    new float[] { 0.223f, -0.223f },
+                    ((TextEmbeddingFloatResults.Embedding) floatResult.chunks().get(0).embedding()).values(),
+                    0.0f
+                );
             }
 
             MatcherAssert.assertThat(webServer.requests(), hasSize(1));
@@ -1541,7 +1507,7 @@ public class CohereServiceTests extends ESTestCase {
             var requestMap = entityAsMap(webServer.requests().get(0).getBody());
             MatcherAssert.assertThat(
                 requestMap,
-                is(Map.of("texts", List.of("foo", "bar"), "model", "model", "embedding_types", List.of("float")))
+                is(Map.of("texts", List.of("a", "bb"), "model", "model", "embedding_types", List.of("float")))
             );
         }
     }
@@ -1592,15 +1558,14 @@ public class CohereServiceTests extends ESTestCase {
                 "model",
                 CohereEmbeddingType.BYTE
             );
-            PlainActionFuture<List<ChunkedInferenceServiceResults>> listener = new PlainActionFuture<>();
+            PlainActionFuture<List<ChunkedInference>> listener = new PlainActionFuture<>();
             // 2 inputs
             service.chunkedInfer(
                 model,
                 null,
-                List.of("foo", "bar"),
+                List.of("a", "bb"),
                 new HashMap<>(),
                 InputType.UNSPECIFIED,
-                new ChunkingOptions(null, null),
                 InferenceAction.Request.DEFAULT_TIMEOUT,
                 listener
             );
@@ -1608,18 +1573,26 @@ public class CohereServiceTests extends ESTestCase {
             var results = listener.actionGet(TIMEOUT);
             assertThat(results, hasSize(2));
             {
-                assertThat(results.get(0), CoreMatchers.instanceOf(InferenceChunkedTextEmbeddingByteResults.class));
-                var floatResult = (InferenceChunkedTextEmbeddingByteResults) results.get(0);
-                assertThat(floatResult.chunks(), hasSize(1));
-                assertEquals("foo", floatResult.chunks().get(0).matchedText());
-                assertArrayEquals(new byte[] { 23, -23 }, floatResult.chunks().get(0).embedding());
+                assertThat(results.get(0), CoreMatchers.instanceOf(ChunkedInferenceEmbedding.class));
+                var byteResult = (ChunkedInferenceEmbedding) results.get(0);
+                assertThat(byteResult.chunks(), hasSize(1));
+                assertEquals(new ChunkedInference.TextOffset(0, 1), byteResult.chunks().get(0).offset());
+                assertThat(byteResult.chunks().get(0).embedding(), instanceOf(TextEmbeddingByteResults.Embedding.class));
+                assertArrayEquals(
+                    new byte[] { 23, -23 },
+                    ((TextEmbeddingByteResults.Embedding) byteResult.chunks().get(0).embedding()).values()
+                );
             }
             {
-                assertThat(results.get(1), CoreMatchers.instanceOf(InferenceChunkedTextEmbeddingByteResults.class));
-                var byteResult = (InferenceChunkedTextEmbeddingByteResults) results.get(1);
+                assertThat(results.get(1), CoreMatchers.instanceOf(ChunkedInferenceEmbedding.class));
+                var byteResult = (ChunkedInferenceEmbedding) results.get(1);
                 assertThat(byteResult.chunks(), hasSize(1));
-                assertEquals("bar", byteResult.chunks().get(0).matchedText());
-                assertArrayEquals(new byte[] { 24, -24 }, byteResult.chunks().get(0).embedding());
+                assertEquals(new ChunkedInference.TextOffset(0, 2), byteResult.chunks().get(0).offset());
+                assertThat(byteResult.chunks().get(0).embedding(), instanceOf(TextEmbeddingByteResults.Embedding.class));
+                assertArrayEquals(
+                    new byte[] { 24, -24 },
+                    ((TextEmbeddingByteResults.Embedding) byteResult.chunks().get(0).embedding()).values()
+                );
             }
 
             MatcherAssert.assertThat(webServer.requests(), hasSize(1));
@@ -1633,13 +1606,20 @@ public class CohereServiceTests extends ESTestCase {
             var requestMap = entityAsMap(webServer.requests().get(0).getBody());
             MatcherAssert.assertThat(
                 requestMap,
-                is(Map.of("texts", List.of("foo", "bar"), "model", "model", "embedding_types", List.of("int8")))
+                is(Map.of("texts", List.of("a", "bb"), "model", "model", "embedding_types", List.of("int8")))
             );
         }
     }
 
-    public void testDefaultSimilarity() {
-        assertEquals(SimilarityMeasure.DOT_PRODUCT, CohereService.defaultSimilarity());
+    public void testDefaultSimilarity_BinaryEmbedding() {
+        assertEquals(SimilarityMeasure.L2_NORM, CohereService.defaultSimilarity(CohereEmbeddingType.BINARY));
+        assertEquals(SimilarityMeasure.L2_NORM, CohereService.defaultSimilarity(CohereEmbeddingType.BIT));
+    }
+
+    public void testDefaultSimilarity_NotBinaryEmbedding() {
+        assertEquals(SimilarityMeasure.COSINE, CohereService.defaultSimilarity(CohereEmbeddingType.FLOAT));
+        assertEquals(SimilarityMeasure.COSINE, CohereService.defaultSimilarity(CohereEmbeddingType.BYTE));
+        assertEquals(SimilarityMeasure.COSINE, CohereService.defaultSimilarity(CohereEmbeddingType.INT8));
     }
 
     public void testInfer_StreamRequest() throws Exception {
@@ -1649,19 +1629,19 @@ public class CohereServiceTests extends ESTestCase {
             """;
         webServer.enqueue(new MockResponse().setResponseCode(200).setBody(responseJson));
 
-        var result = streamChatCompletion();
-
-        InferenceEventsAssertion.assertThat(result).hasFinishedStream().hasNoErrors().hasEvent("""
+        streamChatCompletion().hasNoErrors().hasEvent("""
             {"completion":[{"delta":"hello"},{"delta":"there"}]}""");
     }
 
-    private InferenceServiceResults streamChatCompletion() throws IOException {
+    private InferenceEventsAssertion streamChatCompletion() throws Exception {
         var senderFactory = HttpRequestSenderTests.createSenderFactory(threadPool, clientManager);
         try (var service = new CohereService(senderFactory, createWithEmptySettings(threadPool))) {
             var model = CohereCompletionModelTests.createModel(getUrl(webServer), "secret", "model");
             PlainActionFuture<InferenceServiceResults> listener = new PlainActionFuture<>();
             service.infer(
                 model,
+                null,
+                null,
                 null,
                 List.of("abc"),
                 true,
@@ -1671,7 +1651,7 @@ public class CohereServiceTests extends ESTestCase {
                 listener
             );
 
-            return listener.actionGet(TIMEOUT);
+            return InferenceEventsAssertion.assertThat(listener.actionGet(TIMEOUT)).hasFinishedStream();
         }
     }
 
@@ -1681,159 +1661,48 @@ public class CohereServiceTests extends ESTestCase {
             """;
         webServer.enqueue(new MockResponse().setResponseCode(200).setBody(responseJson));
 
-        var result = streamChatCompletion();
-
-        InferenceEventsAssertion.assertThat(result)
-            .hasFinishedStream()
-            .hasNoEvents()
-            .hasErrorWithStatusCode(500)
-            .hasErrorContaining("how dare you");
+        streamChatCompletion().hasNoEvents().hasErrorWithStatusCode(500).hasErrorContaining("how dare you");
     }
 
     @SuppressWarnings("checkstyle:LineLength")
     public void testGetConfiguration() throws Exception {
         try (var service = createCohereService()) {
-            String content = XContentHelper.stripWhitespace(
-                """
-                    {
-                            "provider": "cohere",
-                            "task_types": [
-                                 {
-                                     "task_type": "text_embedding",
-                                     "configuration": {
-                                         "truncate": {
-                                             "default_value": null,
-                                             "depends_on": [],
-                                             "display": "dropdown",
-                                             "label": "Truncate",
-                                             "options": [
-                                                 {
-                                                     "label": "NONE",
-                                                     "value": "NONE"
-                                                 },
-                                                 {
-                                                     "label": "START",
-                                                     "value": "START"
-                                                 },
-                                                 {
-                                                     "label": "END",
-                                                     "value": "END"
-                                                 }
-                                             ],
-                                             "order": 2,
-                                             "required": false,
-                                             "sensitive": false,
-                                             "tooltip": "Specifies how the API handles inputs longer than the maximum token length.",
-                                             "type": "str",
-                                             "ui_restrictions": [],
-                                             "validations": [],
-                                             "value": ""
-                                         },
-                                         "input_type": {
-                                             "default_value": null,
-                                             "depends_on": [],
-                                             "display": "dropdown",
-                                             "label": "Input Type",
-                                             "options": [
-                                                 {
-                                                     "label": "classification",
-                                                     "value": "classification"
-                                                 },
-                                                 {
-                                                     "label": "clusterning",
-                                                     "value": "clusterning"
-                                                 },
-                                                 {
-                                                     "label": "ingest",
-                                                     "value": "ingest"
-                                                 },
-                                                 {
-                                                     "label": "search",
-                                                     "value": "search"
-                                                 }
-                                             ],
-                                             "order": 1,
-                                             "required": false,
-                                             "sensitive": false,
-                                             "tooltip": "Specifies the type of input passed to the model.",
-                                             "type": "str",
-                                             "ui_restrictions": [],
-                                             "validations": [],
-                                             "value": ""
-                                         }
-                                     }
-                                 },
-                                 {
-                                     "task_type": "rerank",
-                                     "configuration": {
-                                         "top_n": {
-                                             "default_value": null,
-                                             "depends_on": [],
-                                             "display": "numeric",
-                                             "label": "Top N",
-                                             "order": 2,
-                                             "required": false,
-                                             "sensitive": false,
-                                             "tooltip": "The number of most relevant documents to return, defaults to the number of the documents.",
-                                             "type": "int",
-                                             "ui_restrictions": [],
-                                             "validations": [],
-                                             "value": null
-                                         },
-                                         "return_documents": {
-                                             "default_value": null,
-                                             "depends_on": [],
-                                             "display": "toggle",
-                                             "label": "Return Documents",
-                                             "order": 1,
-                                             "required": false,
-                                             "sensitive": false,
-                                             "tooltip": "Specify whether to return doc text within the results.",
-                                             "type": "bool",
-                                             "ui_restrictions": [],
-                                             "validations": [],
-                                             "value": false
-                                         }
-                                     }
-                                 },
-                                 {
-                                     "task_type": "completion",
-                                     "configuration": {}
-                                 }
-                            ],
-                            "configuration": {
-                                "api_key": {
-                                    "default_value": null,
-                                    "depends_on": [],
-                                    "display": "textbox",
-                                    "label": "API Key",
-                                    "order": 1,
-                                    "required": true,
-                                    "sensitive": true,
-                                    "tooltip": "API Key for the provider you're connecting to.",
-                                    "type": "str",
-                                    "ui_restrictions": [],
-                                    "validations": [],
-                                    "value": null
-                                },
-                                "rate_limit.requests_per_minute": {
-                                    "default_value": null,
-                                    "depends_on": [],
-                                    "display": "numeric",
-                                    "label": "Rate Limit",
-                                    "order": 6,
-                                    "required": false,
-                                    "sensitive": false,
-                                    "tooltip": "Minimize the number of rate limit errors.",
-                                    "type": "int",
-                                    "ui_restrictions": [],
-                                    "validations": [],
-                                    "value": null
-                                }
+            String content = XContentHelper.stripWhitespace("""
+                {
+                        "service": "cohere",
+                        "name": "Cohere",
+                        "task_types": ["text_embedding", "rerank", "completion"],
+                        "configurations": {
+                            "api_key": {
+                                "description": "API Key for the provider you're connecting to.",
+                                "label": "API Key",
+                                "required": true,
+                                "sensitive": true,
+                                "updatable": true,
+                                "type": "str",
+                                "supported_task_types": ["text_embedding", "rerank", "completion"]
+                            },
+                            "model_id": {
+                                "description": "The name of the model to use for the inference task.",
+                                "label": "Model ID",
+                                "required": false,
+                                "sensitive": false,
+                                "updatable": false,
+                                "type": "str",
+                                "supported_task_types": ["text_embedding", "rerank", "completion"]
+                            },
+                            "rate_limit.requests_per_minute": {
+                                "description": "Minimize the number of rate limit errors.",
+                                "label": "Rate Limit",
+                                "required": false,
+                                "sensitive": false,
+                                "updatable": false,
+                                "type": "int",
+                                "supported_task_types": ["text_embedding", "rerank", "completion"]
                             }
                         }
-                    """
-            );
+                    }
+                """);
             InferenceServiceConfiguration configuration = InferenceServiceConfiguration.fromXContentBytes(
                 new BytesArray(content),
                 XContentType.JSON
@@ -1851,8 +1720,8 @@ public class CohereServiceTests extends ESTestCase {
 
     public void testSupportsStreaming() throws IOException {
         try (var service = new CohereService(mock(), createWithEmptySettings(mock()))) {
-            assertTrue(service.canStream(TaskType.COMPLETION));
-            assertTrue(service.canStream(TaskType.ANY));
+            assertThat(service.supportedStreamingTasks(), is(EnumSet.of(TaskType.COMPLETION)));
+            assertFalse(service.canStream(TaskType.ANY));
         }
     }
 

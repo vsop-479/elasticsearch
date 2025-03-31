@@ -344,8 +344,11 @@ public class NodeStatsMonitoringDocTests extends BaseFilteredMonitoringDocTestCa
             no,
             no,
             no,
+            no,
             false,
             ++iota,
+            no,
+            no,
             no,
             no
         );

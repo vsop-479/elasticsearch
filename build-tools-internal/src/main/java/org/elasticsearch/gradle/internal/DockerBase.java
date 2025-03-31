@@ -13,10 +13,8 @@ package org.elasticsearch.gradle.internal;
  * This class models the different Docker base images that are used to build Docker distributions of Elasticsearch.
  */
 public enum DockerBase {
-    DEFAULT("ubuntu:20.04", "", "apt-get"),
-
-    // "latest" here is intentional, since the image name specifies "8"
-    UBI("docker.elastic.co/ubi8/ubi-minimal:latest", "-ubi", "microdnf"),
+    // "latest" here is intentional, since the image name specifies "9"
+    DEFAULT("docker.elastic.co/ubi9/ubi-minimal:latest", "", "microdnf"),
 
     // The Iron Bank base image is UBI (albeit hardened), but we are required to parameterize the Docker build
     IRON_BANK("${BASE_REGISTRY}/${BASE_IMAGE}:${BASE_TAG}", "-ironbank", "yum"),
@@ -24,10 +22,12 @@ public enum DockerBase {
     // Chainguard based wolfi image with latest jdk
     // This is usually updated via renovatebot
     // spotless:off
-    WOLFI("docker.elastic.co/wolfi/chainguard-base:latest@sha256:973431347ad45f40e01afbbd010bf9de929c088a63382239b90dd84f39618bc8",
+    WOLFI("docker.elastic.co/wolfi/chainguard-base:latest@sha256:c4e10ecf3d8a21cf4be2fb53a2f522de50e14c80ce1da487e3ffd13f4d48d24d",
         "-wolfi",
         "apk"
     ),
+
+    FIPS("docker.elastic.co/wolfi/chainguard-base-fips:sha256-feb7aeb1bbcb331afa089388f2fa1e81997fc24642ca4fa06b7e502ff599a4cf", "-fips", "apk"),
     // spotless:on
     // Based on WOLFI above, with more extras. We don't set a base image because
     // we programmatically extend from the wolfi image.

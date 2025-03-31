@@ -28,6 +28,7 @@ import org.elasticsearch.xpack.esql.core.util.PlanStreamOutput;
 import org.elasticsearch.xpack.esql.io.stream.PlanStreamInput;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Objects;
 
 import static org.elasticsearch.xpack.esql.core.util.PlanStreamInput.readCachedStringWithVersionCheck;
@@ -60,7 +61,7 @@ public final class UnsupportedAttribute extends FieldAttribute implements Unreso
     private final boolean hasCustomMessage; // TODO remove me and just use message != null?
 
     private static String errorMessage(String name, UnsupportedEsField field) {
-        return "Cannot use field [" + name + "] with unsupported type [" + field.getOriginalType() + "]";
+        return "Cannot use field [" + name + "] with unsupported type [" + String.join(",", field.getOriginalTypes()) + "]";
     }
 
     public UnsupportedAttribute(Source source, String name, UnsupportedEsField field) {
@@ -81,8 +82,7 @@ public final class UnsupportedAttribute extends FieldAttribute implements Unreso
         this(
             Source.readFrom((PlanStreamInput) in),
             readCachedStringWithVersionCheck(in),
-            in.getTransportVersion().onOrAfter(TransportVersions.ESQL_ES_FIELD_CACHED_SERIALIZATION)
-                || in.getTransportVersion().isPatchFrom(TransportVersions.V_8_15_2) ? EsField.readFrom(in) : new UnsupportedEsField(in),
+            in.getTransportVersion().onOrAfter(TransportVersions.V_8_15_2) ? EsField.readFrom(in) : new UnsupportedEsField(in),
             in.readOptionalString(),
             NameId.readFrom((PlanStreamInput) in)
         );
@@ -93,8 +93,7 @@ public final class UnsupportedAttribute extends FieldAttribute implements Unreso
         if (((PlanStreamOutput) out).writeAttributeCacheHeader(this)) {
             Source.EMPTY.writeTo(out);
             writeCachedStringWithVersionCheck(out, name());
-            if (out.getTransportVersion().onOrAfter(TransportVersions.ESQL_ES_FIELD_CACHED_SERIALIZATION)
-                || out.getTransportVersion().isPatchFrom(TransportVersions.V_8_15_2)) {
+            if (out.getTransportVersion().onOrAfter(TransportVersions.V_8_15_2)) {
                 field().writeTo(out);
             } else {
                 field().writeContent(out);
@@ -175,5 +174,10 @@ public final class UnsupportedAttribute extends FieldAttribute implements Unreso
             return Objects.equals(hasCustomMessage, ua.hasCustomMessage) && Objects.equals(message, ua.message);
         }
         return false;
+    }
+
+    @Override
+    public List<String> originalTypes() {
+        return field().getOriginalTypes();
     }
 }

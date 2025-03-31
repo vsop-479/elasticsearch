@@ -13,7 +13,9 @@ import org.elasticsearch.Version;
 import org.elasticsearch.common.breaker.NoopCircuitBreaker;
 import org.elasticsearch.common.network.InetAddresses;
 import org.elasticsearch.common.time.DateFormatters;
+import org.elasticsearch.common.time.DateUtils;
 import org.elasticsearch.common.util.BigArrays;
+import org.elasticsearch.compute.data.AggregateMetricDoubleBlockBuilder;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BlockFactory;
 import org.elasticsearch.compute.data.BlockUtils;
@@ -23,6 +25,7 @@ import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.core.Booleans;
 import org.elasticsearch.core.Releasable;
 import org.elasticsearch.core.Releasables;
+import org.elasticsearch.core.Strings;
 import org.elasticsearch.core.Tuple;
 import org.elasticsearch.logging.Logger;
 import org.elasticsearch.test.VersionUtils;
@@ -60,9 +63,10 @@ import static org.elasticsearch.xpack.esql.core.util.DateUtils.UTC_DATE_TIME_FOR
 import static org.elasticsearch.xpack.esql.core.util.NumericUtils.asLongUnsigned;
 import static org.elasticsearch.xpack.esql.core.util.SpatialCoordinateTypes.CARTESIAN;
 import static org.elasticsearch.xpack.esql.core.util.SpatialCoordinateTypes.GEO;
+import static org.elasticsearch.xpack.esql.type.EsqlDataTypeConverter.stringToAggregateMetricDoubleLiteral;
 
 public final class CsvTestUtils {
-    private static final int MAX_WIDTH = 20;
+    private static final int MAX_WIDTH = 80;
     private static final CsvPreference CSV_SPEC_PREFERENCES = new CsvPreference.Builder('"', '|', "\r\n").build();
     private static final String NULL_VALUE = "null";
     private static final char ESCAPE_CHAR = '\\';
@@ -471,13 +475,25 @@ public final class CsvTestUtils {
                 return null;
             }
             Instant parsed = DateFormatters.from(ISO_DATE_WITH_NANOS.parse(x)).toInstant();
-            return parsed.getEpochSecond() * 1_000_000_000 + parsed.getNano();
+            return DateUtils.toLong(parsed);
         }, (l, r) -> l instanceof Long maybeIP ? maybeIP.compareTo((Long) r) : l.toString().compareTo(r.toString()), Long.class),
         BOOLEAN(Booleans::parseBoolean, Boolean.class),
         GEO_POINT(x -> x == null ? null : GEO.wktToWkb(x), BytesRef.class),
         CARTESIAN_POINT(x -> x == null ? null : CARTESIAN.wktToWkb(x), BytesRef.class),
         GEO_SHAPE(x -> x == null ? null : GEO.wktToWkb(x), BytesRef.class),
-        CARTESIAN_SHAPE(x -> x == null ? null : CARTESIAN.wktToWkb(x), BytesRef.class);
+        CARTESIAN_SHAPE(x -> x == null ? null : CARTESIAN.wktToWkb(x), BytesRef.class),
+        AGGREGATE_METRIC_DOUBLE(
+            x -> x == null ? null : stringToAggregateMetricDoubleLiteral(x),
+            AggregateMetricDoubleBlockBuilder.AggregateMetricDoubleLiteral.class
+        ),
+        UNSUPPORTED(Type::convertUnsupported, Void.class);
+
+        private static Void convertUnsupported(String s) {
+            if (s != null) {
+                throw new IllegalArgumentException(Strings.format("Unsupported type should always be null, was '%s'", s));
+            }
+            return null;
+        }
 
         private static final Map<String, Type> LOOKUP = new HashMap<>();
 
@@ -485,6 +501,9 @@ public final class CsvTestUtils {
             for (Type value : Type.values()) {
                 LOOKUP.put(value.name(), value);
             }
+            // Types with a different field caps family type
+            LOOKUP.put("SEMANTIC_TEXT", TEXT);
+
             // widen smaller types
             LOOKUP.put("SHORT", INTEGER);
             LOOKUP.put("BYTE", INTEGER);
@@ -535,6 +554,9 @@ public final class CsvTestUtils {
         }
 
         public static Type asType(ElementType elementType, Type actualType) {
+            if (actualType == Type.UNSUPPORTED) {
+                return UNSUPPORTED;
+            }
             return switch (elementType) {
                 case INT -> INTEGER;
                 case LONG -> LONG;
@@ -544,17 +566,24 @@ public final class CsvTestUtils {
                 case BYTES_REF -> bytesRefBlockType(actualType);
                 case BOOLEAN -> BOOLEAN;
                 case DOC -> throw new IllegalArgumentException("can't assert on doc blocks");
-                case COMPOSITE -> throw new IllegalArgumentException("can't assert on composite blocks");
+                case COMPOSITE -> compositeBlockType(actualType);
                 case UNKNOWN -> throw new IllegalArgumentException("Unknown block types cannot be handled");
             };
         }
 
+        private static Type compositeBlockType(Type actualType) {
+            return switch (actualType) {
+                case AGGREGATE_METRIC_DOUBLE -> actualType;
+                default -> throw new IllegalArgumentException("can't assert on composite blocks that aren't aggregate metric doubles");
+            };
+        }
+
         private static Type bytesRefBlockType(Type actualType) {
-            if (actualType == GEO_POINT || actualType == CARTESIAN_POINT || actualType == GEO_SHAPE || actualType == CARTESIAN_SHAPE) {
-                return actualType;
-            } else {
-                return KEYWORD;
-            }
+            return switch (actualType) {
+                case NULL -> NULL;
+                case GEO_POINT, CARTESIAN_POINT, GEO_SHAPE, CARTESIAN_SHAPE -> actualType;
+                default -> KEYWORD;
+            };
         }
 
         Object convert(String value) {
@@ -644,8 +673,6 @@ public final class CsvTestUtils {
 
     private static double scaledFloat(String value, String factor) {
         double scalingFactor = Double.parseDouble(factor);
-        // this extra division introduces extra imprecision in the following multiplication, but this is how ScaledFloatFieldMapper works.
-        double scalingFactorInverse = 1d / scalingFactor;
-        return new BigDecimal(value).multiply(BigDecimal.valueOf(scalingFactor)).longValue() * scalingFactorInverse;
+        return new BigDecimal(value).multiply(BigDecimal.valueOf(scalingFactor)).longValue() / scalingFactor;
     }
 }
