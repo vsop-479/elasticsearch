@@ -7,14 +7,10 @@
 
 package org.elasticsearch.xpack.application;
 
-import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
-import org.elasticsearch.common.settings.ClusterSettings;
-import org.elasticsearch.common.settings.IndexScopedSettings;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.settings.SettingsFilter;
 import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.features.NodeFeature;
 import org.elasticsearch.indices.SystemIndexDescriptor;
@@ -27,8 +23,8 @@ import org.elasticsearch.plugins.ActionPlugin;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.plugins.SearchPlugin;
 import org.elasticsearch.plugins.SystemIndexPlugin;
-import org.elasticsearch.rest.RestController;
 import org.elasticsearch.rest.RestHandler;
+import org.elasticsearch.search.rank.RankDoc;
 import org.elasticsearch.xcontent.ParseField;
 import org.elasticsearch.xpack.application.analytics.AnalyticsTemplateRegistry;
 import org.elasticsearch.xpack.application.analytics.action.DeleteAnalyticsCollectionAction;
@@ -178,6 +174,7 @@ import org.elasticsearch.xpack.application.rules.action.TransportPutQueryRuleAct
 import org.elasticsearch.xpack.application.rules.action.TransportPutQueryRulesetAction;
 import org.elasticsearch.xpack.application.rules.action.TransportTestQueryRulesetAction;
 import org.elasticsearch.xpack.application.rules.retriever.QueryRuleRetrieverBuilder;
+import org.elasticsearch.xpack.application.rules.retriever.RuleQueryRankDoc;
 import org.elasticsearch.xpack.application.search.SearchApplicationIndexService;
 import org.elasticsearch.xpack.application.search.action.DeleteSearchApplicationAction;
 import org.elasticsearch.xpack.application.search.action.GetSearchApplicationAction;
@@ -359,14 +356,13 @@ public class EnterpriseSearch extends Plugin implements ActionPlugin, SystemInde
     }
 
     @Override
+    public List<NamedWriteableRegistry.Entry> getNamedWriteables() {
+        return List.of(new NamedWriteableRegistry.Entry(RankDoc.class, RuleQueryRankDoc.NAME, RuleQueryRankDoc::new));
+    }
+
+    @Override
     public List<RestHandler> getRestHandlers(
-        Settings settings,
-        NamedWriteableRegistry namedWriteableRegistry,
-        RestController restController,
-        ClusterSettings clusterSettings,
-        IndexScopedSettings indexScopedSettings,
-        SettingsFilter settingsFilter,
-        IndexNameExpressionResolver indexNameExpressionResolver,
+        RestHandlersServices restHandlersServices,
         Supplier<DiscoveryNodes> nodesInCluster,
         Predicate<NodeFeature> clusterSupportsFeature
     ) {
@@ -469,8 +465,7 @@ public class EnterpriseSearch extends Plugin implements ActionPlugin, SystemInde
             services.clusterService(),
             services.threadPool(),
             services.client(),
-            services.xContentRegistry(),
-            services.projectResolver()
+            services.xContentRegistry()
         );
         analyticsTemplateRegistry.initialize();
 
@@ -479,8 +474,7 @@ public class EnterpriseSearch extends Plugin implements ActionPlugin, SystemInde
             services.clusterService(),
             services.threadPool(),
             services.client(),
-            services.xContentRegistry(),
-            services.projectResolver()
+            services.xContentRegistry()
         );
         connectorTemplateRegistry.initialize();
 

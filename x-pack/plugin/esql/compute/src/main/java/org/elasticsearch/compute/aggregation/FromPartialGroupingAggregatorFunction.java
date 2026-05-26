@@ -10,6 +10,8 @@ package org.elasticsearch.compute.aggregation;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.CompositeBlock;
 import org.elasticsearch.compute.data.ElementType;
+import org.elasticsearch.compute.data.IntArrayBlock;
+import org.elasticsearch.compute.data.IntBigArrayBlock;
 import org.elasticsearch.compute.data.IntBlock;
 import org.elasticsearch.compute.data.IntVector;
 import org.elasticsearch.compute.data.Page;
@@ -38,10 +40,22 @@ public class FromPartialGroupingAggregatorFunction implements GroupingAggregator
     }
 
     @Override
-    public AddInput prepareProcessPage(SeenGroupIds seenGroupIds, Page page) {
+    public AddInput prepareProcessRawInputPage(SeenGroupIds seenGroupIds, Page page) {
         return new AddInput() {
             @Override
             public void add(int positionOffset, IntBlock groupIds) {
+                assert false : "Intermediate group id must not have nulls";
+                throw new IllegalStateException("Intermediate group id must not have nulls");
+            }
+
+            @Override
+            public void add(int positionOffset, IntArrayBlock groupIds) {
+                assert false : "Intermediate group id must not have nulls";
+                throw new IllegalStateException("Intermediate group id must not have nulls");
+            }
+
+            @Override
+            public void add(int positionOffset, IntBigArrayBlock groupIds) {
                 assert false : "Intermediate group id must not have nulls";
                 throw new IllegalStateException("Intermediate group id must not have nulls");
             }
@@ -62,25 +76,48 @@ public class FromPartialGroupingAggregatorFunction implements GroupingAggregator
     }
 
     @Override
+    public AddInput prepareProcessIntermediateInputPage(SeenGroupIds seenGroupIds, Page page) {
+        return delegate.prepareProcessIntermediateInputPage(seenGroupIds, page);
+    }
+
+    @Override
+    public void addIntermediateInput(int positionOffset, IntArrayBlock groupIdVector, Page page) {
+        final CompositeBlock inputBlock = page.getBlock(inputChannel);
+        delegate.addIntermediateInput(positionOffset, groupIdVector, inputBlock.asPage());
+    }
+
+    @Override
+    public void addIntermediateInput(int positionOffset, IntBigArrayBlock groupIdVector, Page page) {
+        final CompositeBlock inputBlock = page.getBlock(inputChannel);
+        delegate.addIntermediateInput(positionOffset, groupIdVector, inputBlock.asPage());
+    }
+
+    @Override
     public void addIntermediateInput(int positionOffset, IntVector groupIdVector, Page page) {
         final CompositeBlock inputBlock = page.getBlock(inputChannel);
         delegate.addIntermediateInput(positionOffset, groupIdVector, inputBlock.asPage());
     }
 
     @Override
-    public void addIntermediateRowInput(int groupId, GroupingAggregatorFunction input, int position) {
-        if (input instanceof FromPartialGroupingAggregatorFunction toPartial) {
-            input = toPartial.delegate;
-        }
-        delegate.addIntermediateRowInput(groupId, input, position);
+    public PreparedForEvaluation prepareEvaluateIntermediate(IntVector selected, GroupingAggregatorEvaluationContext ctx) {
+        return (blocks, offset, selectedInPage) -> evaluateIntermediate(blocks, offset, selectedInPage, ctx);
     }
 
     @Override
-    public void evaluateIntermediate(Block[] blocks, int offset, IntVector selected) {
+    public PreparedForEvaluation prepareEvaluateFinal(IntVector selected, GroupingAggregatorEvaluationContext ctx) {
+        return (blocks, offset, selectedInPage) -> evaluateFinal(blocks, offset, selectedInPage, ctx);
+    }
+
+    private void evaluateIntermediate(
+        Block[] blocks,
+        int offset,
+        IntVector selected,
+        GroupingAggregatorEvaluationContext evaluationContext
+    ) {
         Block[] partialBlocks = new Block[delegate.intermediateBlockCount()];
         boolean success = false;
         try {
-            delegate.evaluateIntermediate(partialBlocks, 0, selected);
+            delegate.prepareEvaluateIntermediate(selected, evaluationContext).evaluate(partialBlocks, 0, selected);
             blocks[offset] = new CompositeBlock(partialBlocks);
             success = true;
         } finally {
@@ -90,9 +127,8 @@ public class FromPartialGroupingAggregatorFunction implements GroupingAggregator
         }
     }
 
-    @Override
-    public void evaluateFinal(Block[] blocks, int offset, IntVector selected, GroupingAggregatorEvaluationContext evaluationContext) {
-        delegate.evaluateFinal(blocks, offset, selected, evaluationContext);
+    private void evaluateFinal(Block[] blocks, int offset, IntVector selected, GroupingAggregatorEvaluationContext evaluationContext) {
+        delegate.prepareEvaluateFinal(selected, evaluationContext).evaluate(blocks, offset, selected);
     }
 
     @Override

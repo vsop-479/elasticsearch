@@ -14,9 +14,9 @@ import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.cli.ExitCodes;
 import org.elasticsearch.cli.MultiCommand;
 import org.elasticsearch.cli.ProcessInfo;
-import org.elasticsearch.cli.Terminal;
-import org.elasticsearch.cli.Terminal.Verbosity;
 import org.elasticsearch.cli.UserException;
+import org.elasticsearch.cli.terminal.Terminal;
+import org.elasticsearch.cli.terminal.Terminal.Verbosity;
 import org.elasticsearch.common.CheckedBiConsumer;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.cli.KeyStoreAwareCommand;
@@ -453,8 +453,8 @@ class SetupPasswordTool extends MultiCommand {
                     Map<String, Object> featureInfo = (Map<String, Object>) features.get("security");
                     if (featureInfo != null) {
                         xPackSecurityFeatureConfig = new XPackSecurityFeatureConfig(
-                            Boolean.parseBoolean(featureInfo.get("available").toString()),
-                            Boolean.parseBoolean(featureInfo.get("enabled").toString())
+                            Booleans.parseBoolean(featureInfo.get("available").toString()),
+                            Booleans.parseBoolean(featureInfo.get("enabled").toString())
                         );
                         return xPackSecurityFeatureConfig;
                     }

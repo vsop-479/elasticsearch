@@ -13,13 +13,17 @@ import org.apache.http.entity.ByteArrayEntity;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.elasticsearch.ElasticsearchException;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.common.Strings;
+import org.elasticsearch.inference.TaskType;
+import org.elasticsearch.inference.UnifiedCompletionRequest;
 import org.elasticsearch.xcontent.ToXContent;
 import org.elasticsearch.xcontent.XContentType;
 import org.elasticsearch.xcontent.json.JsonXContent;
 import org.elasticsearch.xpack.inference.external.http.sender.UnifiedChatInput;
 import org.elasticsearch.xpack.inference.external.request.HttpRequest;
-import org.elasticsearch.xpack.inference.external.request.Request;
+import org.elasticsearch.xpack.inference.external.request.OutboundRequest;
+import org.elasticsearch.xpack.inference.external.request.OutboundUnifiedCompletionRequest;
 import org.elasticsearch.xpack.inference.external.unified.UnifiedChatCompletionRequestEntity;
 import org.elasticsearch.xpack.inference.services.deepseek.DeepSeekChatCompletionModel;
 
@@ -30,7 +34,7 @@ import java.util.Objects;
 
 import static org.elasticsearch.xpack.inference.external.request.RequestUtils.createAuthBearerHeader;
 
-public class DeepSeekChatCompletionRequest implements Request {
+public class DeepSeekChatCompletionRequest implements OutboundUnifiedCompletionRequest {
     private static final Logger logger = LogManager.getLogger(DeepSeekChatCompletionRequest.class);
     private static final String MODEL_FIELD = "model";
     private static final String MAX_TOKENS = "max_tokens";
@@ -44,7 +48,7 @@ public class DeepSeekChatCompletionRequest implements Request {
     }
 
     @Override
-    public HttpRequest createHttpRequest() {
+    public void createHttpRequest(ActionListener<HttpRequest> listener) {
         HttpPost httpPost = new HttpPost(model.uri());
 
         httpPost.setEntity(createEntity());
@@ -56,20 +60,17 @@ public class DeepSeekChatCompletionRequest implements Request {
                 () -> logger.debug("No auth token present in request, sending without auth...")
             );
 
-        return new HttpRequest(httpPost, getInferenceEntityId());
+        listener.onResponse(new HttpRequest(httpPost, getInferenceEntityId()));
     }
 
     private ByteArrayEntity createEntity() {
         var modelId = Objects.requireNonNullElseGet(unifiedChatInput.getRequest().model(), model::model);
         try (var builder = JsonXContent.contentBuilder()) {
             builder.startObject();
-            new UnifiedChatCompletionRequestEntity(unifiedChatInput).toXContent(builder, ToXContent.EMPTY_PARAMS);
-            builder.field(MODEL_FIELD, modelId);
-
-            if (unifiedChatInput.getRequest().maxCompletionTokens() != null) {
-                builder.field(MAX_TOKENS, unifiedChatInput.getRequest().maxCompletionTokens());
-            }
-
+            new UnifiedChatCompletionRequestEntity(unifiedChatInput).toXContent(
+                builder,
+                UnifiedCompletionRequest.withMaxTokens(modelId, ToXContent.EMPTY_PARAMS)
+            );
             builder.endObject();
             return new ByteArrayEntity(Strings.toString(builder).getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
@@ -83,7 +84,7 @@ public class DeepSeekChatCompletionRequest implements Request {
     }
 
     @Override
-    public Request truncate() {
+    public OutboundRequest truncate() {
         return this;
     }
 
@@ -95,6 +96,11 @@ public class DeepSeekChatCompletionRequest implements Request {
     @Override
     public String getInferenceEntityId() {
         return model.getInferenceEntityId();
+    }
+
+    @Override
+    public TaskType getTaskType() {
+        return model.getTaskType();
     }
 
     @Override

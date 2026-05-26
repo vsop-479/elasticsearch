@@ -10,14 +10,15 @@ package org.elasticsearch.repositories.gcs;
 
 import com.google.api.client.http.HttpResponse;
 import com.google.cloud.BaseService;
-import com.google.cloud.RetryHelper;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.StorageException;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.lucene.store.AlreadyClosedException;
 import org.elasticsearch.common.blobstore.OperationPurpose;
-import org.elasticsearch.core.IOUtils;
+import org.elasticsearch.common.blobstore.RetryingInputStream;
+import org.elasticsearch.core.Nullable;
 import org.elasticsearch.repositories.blobstore.RequestedRangeNotSatisfiedException;
 import org.elasticsearch.rest.RestStatus;
 
@@ -25,105 +26,163 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.NoSuchFileException;
-import java.util.ArrayList;
-import java.util.List;
-
-import static org.elasticsearch.core.Strings.format;
+import java.util.Map;
 
 /**
  * Wrapper around reads from GCS that will retry blob downloads that fail part-way through, resuming from where the failure occurred.
- * This should be handled by the SDK but it isn't today. This should be revisited in the future (e.g. before removing
- * the {@link org.elasticsearch.Version#V_7_0_0} version constant) and removed if the SDK handles retries itself in the future.
+ * <p>
+ * We wrap the default GCS SDK retry logic with the retry logic from {@link RetryingInputStream}, which is slightly more sophisticated
+ * and tailored to our needs.
  */
-class GoogleCloudStorageRetryingInputStream extends InputStream {
+class GoogleCloudStorageRetryingInputStream extends RetryingInputStream<Long> {
 
     private static final Logger logger = LogManager.getLogger(GoogleCloudStorageRetryingInputStream.class);
 
-    static final int MAX_SUPPRESSED_EXCEPTIONS = 10;
-
-    private final OperationPurpose purpose;
-    private final MeteredStorage client;
-    private final BlobId blobId;
-    private final long start;
-    private final long end;
-    private final int maxAttempts;
-    private InputStream currentStream;
-    private int attempt = 1;
-    private List<StorageException> failures = new ArrayList<>(MAX_SUPPRESSED_EXCEPTIONS);
-    private long currentOffset;
-    private boolean closed;
-
-    // Used for testing only
-    GoogleCloudStorageRetryingInputStream(OperationPurpose purpose, MeteredStorage client, BlobId blobId) throws IOException {
-        this(purpose, client, blobId, 0, Long.MAX_VALUE - 1);
-    }
-
-    // Used for testing only
-    GoogleCloudStorageRetryingInputStream(OperationPurpose purpose, MeteredStorage client, BlobId blobId, long start, long end)
+    GoogleCloudStorageRetryingInputStream(GoogleCloudStorageBlobStore blobStore, OperationPurpose purpose, BlobId blobId)
         throws IOException {
-        if (start < 0L) {
-            throw new IllegalArgumentException("start must be non-negative");
-        }
-        if (end < start || end == Long.MAX_VALUE) {
-            throw new IllegalArgumentException("end must be >= start and not Long.MAX_VALUE");
-        }
-        this.purpose = purpose;
-        this.client = client;
-        this.blobId = blobId;
-        this.start = start;
-        this.end = end;
-        this.maxAttempts = client.getOptions().getRetrySettings().getMaxAttempts();
-        this.currentStream = openStream();
+        this(blobStore, purpose, blobId, 0, Long.MAX_VALUE - 1);
     }
 
-    private InputStream openStream() throws IOException {
-        try {
-            try {
-                return RetryHelper.runWithRetries(() -> {
-                    try {
-                        return SocketAccess.doPrivilegedIOException(() -> {
-                            final var meteredGet = client.meteredObjectsGet(purpose, blobId.getBucket(), blobId.getName());
-                            meteredGet.setReturnRawInputStream(true);
+    GoogleCloudStorageRetryingInputStream(
+        GoogleCloudStorageBlobStore blobStore,
+        OperationPurpose purpose,
+        BlobId blobId,
+        long start,
+        long end
+    ) throws IOException {
+        super(blobStore.getRepositoriesMetrics(), new GoogleCloudStorageBlobStoreServices(blobStore, purpose, blobId), purpose, start, end);
+    }
 
-                            if (currentOffset > 0 || start > 0 || end < Long.MAX_VALUE - 1) {
-                                if (meteredGet.getRequestHeaders() != null) {
-                                    meteredGet.getRequestHeaders().setRange("bytes=" + Math.addExact(start, currentOffset) + "-" + end);
-                                }
-                            }
-                            final HttpResponse resp = meteredGet.executeMedia();
-                            final Long contentLength = resp.getHeaders().getContentLength();
-                            InputStream content = resp.getContent();
-                            if (contentLength != null) {
-                                content = new ContentLengthValidatingInputStream(content, contentLength);
-                            }
-                            return content;
-                        });
-                    } catch (IOException e) {
-                        throw StorageException.translate(e);
-                    }
-                }, client.getOptions().getRetrySettings(), BaseService.EXCEPTION_HANDLER, client.getOptions().getClock());
-            } catch (RetryHelper.RetryHelperException e) {
-                throw StorageException.translateAndThrow(e);
-            }
-        } catch (StorageException storageException) {
-            if (storageException.getCode() == RestStatus.NOT_FOUND.getStatus()) {
-                throw addSuppressedExceptions(
-                    new NoSuchFileException("Blob object [" + blobId.getName() + "] not found: " + storageException.getMessage())
-                );
-            }
-            if (storageException.getCode() == RestStatus.REQUESTED_RANGE_NOT_SATISFIED.getStatus()) {
-                long currentPosition = Math.addExact(start, currentOffset);
-                throw addSuppressedExceptions(
-                    new RequestedRangeNotSatisfiedException(
-                        blobId.getName(),
-                        currentPosition,
-                        (end < Long.MAX_VALUE - 1) ? end - currentPosition + 1 : end,
-                        storageException
-                    )
-                );
-            }
-            throw addSuppressedExceptions(storageException);
+    private static class GoogleCloudStorageBlobStoreServices implements BlobStoreServices<Long> {
+
+        private final GoogleCloudStorageBlobStore blobStore;
+        private final OperationPurpose purpose;
+        private final BlobId blobId;
+
+        private GoogleCloudStorageBlobStoreServices(GoogleCloudStorageBlobStore blobStore, OperationPurpose purpose, BlobId blobId) {
+            this.blobStore = blobStore;
+            this.purpose = purpose;
+            this.blobId = blobId;
         }
+
+        @Override
+        public SingleAttemptInputStream<Long> getInputStream(@Nullable Long lastGeneration, long start, long end) throws IOException {
+            final MeteredStorage client = blobStore.client();
+            try {
+                try {
+                    final var meteredGet = client.meteredObjectsGet(purpose, blobId.getBucket(), blobId.getName());
+                    meteredGet.setReturnRawInputStream(true);
+                    if (lastGeneration != null) {
+                        meteredGet.setGeneration(lastGeneration);
+                    }
+
+                    if (start > 0 || end < Long.MAX_VALUE - 1) {
+                        if (meteredGet.getRequestHeaders() != null) {
+                            meteredGet.getRequestHeaders().setRange("bytes=" + start + "-" + end);
+                        }
+                    }
+                    final HttpResponse resp = meteredGet.executeMedia();
+                    // Store the generation of the first response we received, so we can detect
+                    // if the file has changed if we need to resume
+                    if (lastGeneration == null) {
+                        lastGeneration = parseGenerationHeader(resp);
+                    }
+
+                    final Long contentLength = resp.getHeaders().getContentLength();
+                    InputStream content = resp.getContent();
+                    if (contentLength != null) {
+                        content = new ContentLengthValidatingInputStream(content, contentLength);
+                    }
+                    return new SingleAttemptInputStream<>(content, start, lastGeneration);
+                } catch (IOException e) {
+                    throw StorageException.translate(e);
+                }
+            } catch (StorageException storageException) {
+                if (storageException.getCode() == RestStatus.NOT_FOUND.getStatus()) {
+                    if (lastGeneration != null) {
+                        throw new NoSuchFileException(
+                            "Blob object ["
+                                + blobId.getName()
+                                + "] generation ["
+                                + lastGeneration
+                                + "] unavailable on resume (contents changed, or object deleted): "
+                                + storageException.getMessage()
+                        );
+                    } else {
+                        throw new NoSuchFileException("Blob object [" + blobId.getName() + "] not found: " + storageException.getMessage());
+                    }
+                }
+                if (storageException.getCode() == RestStatus.REQUESTED_RANGE_NOT_SATISFIED.getStatus()) {
+                    throw new RequestedRangeNotSatisfiedException(
+                        blobId.getName(),
+                        start,
+                        (end < Long.MAX_VALUE - 1) ? end - start + 1 : end,
+                        storageException
+                    );
+                }
+                throw storageException;
+            }
+        }
+
+        @Override
+        public long getMeaningfulProgressSize() {
+            return Math.max(1L, GoogleCloudStorageBlobStore.SDK_DEFAULT_CHUNK_SIZE / 100L);
+        }
+
+        @Override
+        public int getMaxRetries() {
+            return blobStore.getMaxRetries();
+        }
+
+        @Override
+        public String getBlobDescription() {
+            return blobId.toString();
+        }
+
+        @Override
+        public boolean isRetryableException(StreamAction action, Exception e) {
+            if (e instanceof AlreadyClosedException) {
+                return false;
+            }
+            return switch (action) {
+                case OPEN -> BaseService.EXCEPTION_HANDLER.shouldRetry(e, null);
+                case READ -> e instanceof StorageException;
+            };
+        }
+
+        @Override
+        public Map<String, Object> getMetricsAttributes(StreamAction action) {
+            return Map.of(
+                "repo_type",
+                GoogleCloudStorageRepository.TYPE,
+                "repo_name",
+                blobStore.getRepositoryName(),
+                "operation",
+                StorageOperation.GET.key(),
+                "purpose",
+                purpose.getKey(),
+                "es_retry_action",
+                action.getPastTense()
+            );
+        }
+    }
+
+    private static Long parseGenerationHeader(HttpResponse response) {
+        final String generationHeader = response.getHeaders().getFirstHeaderStringValue("x-goog-generation");
+        if (generationHeader != null) {
+            try {
+                return Long.parseLong(generationHeader);
+            } catch (NumberFormatException e) {
+                final String message = "Unexpected value for x-goog-generation header: " + generationHeader;
+                logger.warn(message);
+                assert false : message;
+            }
+        } else {
+            String message = "Missing x-goog-generation header";
+            logger.warn(message);
+            assert false : message;
+        }
+        return null;
     }
 
     // Google's SDK ignores the Content-Length header when no bytes are sent, see NetHttpResponse.SizeValidatingInputStream
@@ -139,32 +198,38 @@ class GoogleCloudStorageRetryingInputStream extends InputStream {
         }
 
         @Override
-        public int read(byte[] b, int off, int len) throws IOException {
-            final int n = in.read(b, off, len);
-            if (n == -1) {
-                checkContentLengthOnEOF();
-            } else {
-                read += n;
+        public int read(byte[] b, int off, int len) {
+            try {
+                final int n = in.read(b, off, len);
+                if (n == -1) {
+                    checkContentLengthOnEOF();
+                } else {
+                    read += n;
+                }
+                return n;
+            } catch (IOException e) {
+                throw StorageException.translate(e);
             }
-            return n;
         }
 
         @Override
-        public int read() throws IOException {
-            final int n = in.read();
-            if (n == -1) {
-                checkContentLengthOnEOF();
-            } else {
-                read++;
+        public int read() {
+            try {
+                final int n = in.read();
+                if (n == -1) {
+                    checkContentLengthOnEOF();
+                } else {
+                    read++;
+                }
+                return n;
+            } catch (IOException e) {
+                throw StorageException.translate(e);
             }
-            return n;
         }
 
         @Override
-        public long skip(long len) throws IOException {
-            final long n = in.skip(len);
-            read += n;
-            return n;
+        public long skip(long len) {
+            throw new UnsupportedOperationException("Skip should be implemented by RetryingInputStream#skip");
         }
 
         private void checkContentLengthOnEOF() throws IOException {
@@ -174,83 +239,11 @@ class GoogleCloudStorageRetryingInputStream extends InputStream {
         }
     }
 
-    @Override
-    public int read() throws IOException {
-        ensureOpen();
-        while (true) {
-            try {
-                final int result = currentStream.read();
-                currentOffset += 1;
-                return result;
-            } catch (IOException e) {
-                reopenStreamOrFail(StorageException.translate(e));
-            }
-        }
-    }
-
-    @Override
-    public int read(byte[] b, int off, int len) throws IOException {
-        ensureOpen();
-        while (true) {
-            try {
-                final int bytesRead = currentStream.read(b, off, len);
-                if (bytesRead == -1) {
-                    return -1;
-                }
-                currentOffset += bytesRead;
-                return bytesRead;
-            } catch (IOException e) {
-                reopenStreamOrFail(StorageException.translate(e));
-            }
-        }
-    }
-
-    private void ensureOpen() {
-        if (closed) {
-            assert false : "using GoogleCloudStorageRetryingInputStream after close";
-            throw new IllegalStateException("using GoogleCloudStorageRetryingInputStream after close");
-        }
-    }
-
-    // TODO: check that object did not change when stream is reopened (e.g. based on etag)
-    private void reopenStreamOrFail(StorageException e) throws IOException {
-        if (attempt >= maxAttempts) {
-            throw addSuppressedExceptions(e);
-        }
-        logger.debug(
-            () -> format("failed reading [%s] at offset [%s], attempt [%s] of [%s], retrying", blobId, currentOffset, attempt, maxAttempts),
-            e
-        );
-        attempt += 1;
-        if (failures.size() < MAX_SUPPRESSED_EXCEPTIONS) {
-            failures.add(e);
-        }
-        IOUtils.closeWhileHandlingException(currentStream);
-        currentStream = openStream();
-    }
-
-    @Override
-    public void close() throws IOException {
+    /**
+     * Close the current stream, used to test resume
+     */
+    // @VisibleForTesting
+    void closeCurrentStream() throws IOException {
         currentStream.close();
-        closed = true;
-    }
-
-    @Override
-    public long skip(long n) throws IOException {
-        // This could be optimized on a failure by re-opening stream directly to the preferred location. However, it is rarely called,
-        // so for now we will rely on the default implementation which just discards bytes by reading.
-        return super.skip(n);
-    }
-
-    @Override
-    public void reset() {
-        throw new UnsupportedOperationException("GoogleCloudStorageRetryingInputStream does not support seeking");
-    }
-
-    private <T extends Exception> T addSuppressedExceptions(T e) {
-        for (StorageException failure : failures) {
-            e.addSuppressed(failure);
-        }
-        return e;
     }
 }

@@ -369,6 +369,43 @@ public class DateUtils {
     }
 
     /**
+     * Rounds the given utc milliseconds since the epoch down to the next offset unit millis.
+     *
+     * @param utcMillis    the milliseconds since the epoch
+     * @param unitMillis   the unit to round to
+     * @param offsetMillis the offset of the unit grid
+     * @return             the rounded milliseconds since the epoch
+     */
+    public static long roundFloor(long utcMillis, long unitMillis, long offsetMillis) {
+        return roundFloor(utcMillis - offsetMillis, unitMillis) + offsetMillis;
+    }
+
+    /**
+     * Returns the remainder r such that:
+     * <p>
+     * utcMillis = roundFloor(utcMillis, unitMillis) + r
+     * @param utcMillis   the milliseconds since the epoch
+     * @param unitMillis  the unit to round to
+     * @return offset from {@link #roundFloor(long, long)} within the unit
+     */
+    public static long floorRemainder(long utcMillis, long unitMillis) {
+        return utcMillis - roundFloor(utcMillis, unitMillis);
+    }
+
+    /**
+     * Rounds the given utc milliseconds since the epoch up to the next offset unit millis.
+     *
+     * @param utcMillis    the milliseconds since the epoch
+     * @param unitMillis   the unit to round to
+     * @param offsetMillis the offset of the unit grid
+     * @return             the rounded milliseconds since the epoch
+     */
+    public static long roundCeil(long utcMillis, long unitMillis, long offsetMillis) {
+        long rounded = roundFloor(utcMillis, unitMillis, offsetMillis);
+        return rounded < utcMillis ? rounded + unitMillis : rounded;
+    }
+
+    /**
      * Round down to the beginning of the quarter of the year of the specified time
      * @param utcMillis the milliseconds since the epoch
      * @return The milliseconds since the epoch rounded down to the quarter of the year
@@ -479,24 +516,7 @@ public class DateUtils {
      * @return The milliseconds since the epoch rounded down to the beginning of the week based on week year
      */
     public static long roundWeekOfWeekYear(final long utcMillis) {
-        return roundWeekIntervalOfWeekYear(utcMillis, 1);
-    }
-
-    /**
-     * Round down to the beginning of the nearest multiple of the specified week interval based on week year
-     * <p>
-     * Consider Sun Dec 29 1969 00:00:00.000 as the start of the first week.
-     * @param utcMillis the milliseconds since the epoch
-     * @param weekInterval the interval in weeks to round down to
-     *
-     * @return The milliseconds since the epoch rounded down to the beginning of the nearest multiple of the
-     * specified week interval based on week year
-     */
-    public static long roundWeekIntervalOfWeekYear(final long utcMillis, final int weekInterval) {
-        if (weekInterval <= 0) {
-            throw new IllegalArgumentException("week interval must be strictly positive, got [" + weekInterval + "]");
-        }
-        return roundFloor(utcMillis + 3 * 86400 * 1000L, 604800000L * weekInterval) - 3 * 86400 * 1000L;
+        return roundFloor(utcMillis + 3 * 86400 * 1000L, 604800000L) - 3 * 86400 * 1000L;
     }
 
     /**

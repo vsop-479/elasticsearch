@@ -47,7 +47,7 @@ public class VoyageAIRerankModel extends VoyageAIModel {
             service,
             VoyageAIRerankServiceSettings.fromMap(serviceSettings, context),
             VoyageAIRerankTaskSettings.fromMap(taskSettings),
-            DefaultSecretSettings.fromMap(secrets),
+            DefaultSecretSettings.fromMap(secrets, context),
             buildUri(VoyageAIService.NAME, VoyageAIRerankModel::buildRequestUri)
         );
     }
@@ -82,10 +82,12 @@ public class VoyageAIRerankModel extends VoyageAIModel {
         super(
             new ModelConfigurations(inferenceId, TaskType.RERANK, service, serviceSettings, taskSettings),
             new ModelSecrets(secretSettings),
-            secretSettings,
-            serviceSettings.getCommonSettings(),
             uri
         );
+    }
+
+    public VoyageAIRerankModel(ModelConfigurations modelConfigurations, ModelSecrets modelSecrets) {
+        super(modelConfigurations, modelSecrets, buildUri(VoyageAIService.NAME, VoyageAIRerankModel::buildRequestUri));
     }
 
     private VoyageAIRerankModel(VoyageAIRerankModel model, VoyageAIRerankTaskSettings taskSettings) {
@@ -102,15 +104,10 @@ public class VoyageAIRerankModel extends VoyageAIModel {
         return (VoyageAIRerankTaskSettings) super.getTaskSettings();
     }
 
-    @Override
-    public DefaultSecretSettings getSecretSettings() {
-        return (DefaultSecretSettings) super.getSecretSettings();
-    }
-
     /**
      * Accepts a visitor to create an executable action. The returned action will not return documents in the response.
-     * @param visitor _
-     * @param taskSettings _
+     * @param visitor          Interface for creating {@link ExecutableAction} instances for Voyage AI models.
+     * @param taskSettings     Settings in the request to override the model's defaults
      * @return the rerank action
      */
     @Override

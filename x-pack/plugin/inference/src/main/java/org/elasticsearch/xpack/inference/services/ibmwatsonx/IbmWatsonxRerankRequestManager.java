@@ -31,7 +31,7 @@ public class IbmWatsonxRerankRequestManager extends IbmWatsonxRequestManager {
 
     private static ResponseHandler createIbmWatsonxResponseHandler() {
         return new IbmWatsonxResponseHandler(
-            "ibm watsonx rerank",
+            "IBM watsonx rerank",
             (request, response) -> IbmWatsonxRankedResponseEntity.fromResponse(response)
         );
     }
@@ -54,13 +54,13 @@ public class IbmWatsonxRerankRequestManager extends IbmWatsonxRequestManager {
         Supplier<Boolean> hasRequestCompletedFunction,
         ActionListener<InferenceServiceResults> listener
     ) {
-        var rerankInput = QueryAndDocsInputs.of(inferenceInputs);
+        var rerankInput = inferenceInputs.castTo(QueryAndDocsInputs.class);
 
         execute(
             new ExecutableInferenceRequest(
                 requestSender,
                 logger,
-                getRerankRequest(rerankInput.getQuery(), rerankInput.getChunks(), model),
+                getRerankRequest(rerankInput.getQueryAsString(), rerankInput.getDocsAsStrings(), model),
                 HANDLER,
                 hasRequestCompletedFunction,
                 listener

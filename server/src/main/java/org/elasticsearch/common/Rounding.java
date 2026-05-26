@@ -18,6 +18,7 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Writeable;
 import org.elasticsearch.common.time.DateUtils;
+import org.elasticsearch.common.time.LocalDateTimeUtils;
 import org.elasticsearch.core.TimeValue;
 
 import java.io.IOException;
@@ -29,7 +30,6 @@ import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoField;
-import java.time.temporal.ChronoUnit;
 import java.time.temporal.IsoFields;
 import java.time.temporal.TemporalField;
 import java.time.temporal.TemporalQueries;
@@ -55,13 +55,22 @@ import java.util.concurrent.TimeUnit;
 public abstract class Rounding implements Writeable {
     private static final Logger logger = LogManager.getLogger(Rounding.class);
 
+    public enum RoundingConvention {
+        /* Round to the left edge of the interval */
+        DOWN,
+
+        /* Round to the right edge of the interval */
+        UP
+    }
+
     public enum DateTimeUnit {
         WEEK_OF_WEEKYEAR((byte) 1, "week", IsoFields.WEEK_OF_WEEK_BASED_YEAR, true, TimeUnit.DAYS.toMillis(7)) {
             private final long extraLocalOffsetLookup = TimeUnit.DAYS.toMillis(7);
 
             @Override
             long roundFloor(long utcMillis, int multiplier) {
-                return DateUtils.roundWeekIntervalOfWeekYear(utcMillis, multiplier);
+                assert multiplier == 1;
+                return DateUtils.roundWeekOfWeekYear(utcMillis);
             }
 
             @Override
@@ -74,7 +83,8 @@ public abstract class Rounding implements Writeable {
 
             @Override
             long roundFloor(long utcMillis, int multiplier) {
-                return multiplier == 1 ? DateUtils.roundYear(utcMillis) : DateUtils.roundYearInterval(utcMillis, multiplier);
+                assert multiplier == 1;
+                return DateUtils.roundYear(utcMillis);
             }
 
             @Override
@@ -87,9 +97,8 @@ public abstract class Rounding implements Writeable {
 
             @Override
             long roundFloor(long utcMillis, int multiplier) {
-                return multiplier == 1
-                    ? DateUtils.roundQuarterOfYear(utcMillis)
-                    : DateUtils.roundIntervalMonthOfYear(utcMillis, multiplier * 3);
+                assert multiplier == 1;
+                return DateUtils.roundQuarterOfYear(utcMillis);
             }
 
             @Override
@@ -102,7 +111,8 @@ public abstract class Rounding implements Writeable {
 
             @Override
             long roundFloor(long utcMillis, int multiplier) {
-                return multiplier == 1 ? DateUtils.roundMonthOfYear(utcMillis) : DateUtils.roundIntervalMonthOfYear(utcMillis, multiplier);
+                assert multiplier == 1;
+                return DateUtils.roundMonthOfYear(utcMillis);
             }
 
             @Override
@@ -113,7 +123,8 @@ public abstract class Rounding implements Writeable {
         DAY_OF_MONTH((byte) 5, "day", ChronoField.DAY_OF_MONTH, true, ChronoField.DAY_OF_MONTH.getBaseUnit().getDuration().toMillis()) {
             @Override
             long roundFloor(long utcMillis, int multiplier) {
-                return DateUtils.roundFloor(utcMillis, this.ratio * multiplier);
+                assert multiplier == 1;
+                return DateUtils.roundFloor(utcMillis, this.ratio);
             }
 
             @Override
@@ -124,7 +135,8 @@ public abstract class Rounding implements Writeable {
         HOUR_OF_DAY((byte) 6, "hour", ChronoField.HOUR_OF_DAY, true, ChronoField.HOUR_OF_DAY.getBaseUnit().getDuration().toMillis()) {
             @Override
             long roundFloor(long utcMillis, int multiplier) {
-                return DateUtils.roundFloor(utcMillis, ratio * multiplier);
+                assert multiplier == 1;
+                return DateUtils.roundFloor(utcMillis, ratio);
             }
 
             @Override
@@ -132,7 +144,7 @@ public abstract class Rounding implements Writeable {
                 return ratio;
             }
         },
-        MINUTES_OF_HOUR(
+        MINUTE_OF_HOUR(
             (byte) 7,
             "minute",
             ChronoField.MINUTE_OF_HOUR,
@@ -141,7 +153,8 @@ public abstract class Rounding implements Writeable {
         ) {
             @Override
             long roundFloor(long utcMillis, int multiplier) {
-                return DateUtils.roundFloor(utcMillis, ratio * multiplier);
+                assert multiplier == 1;
+                return DateUtils.roundFloor(utcMillis, ratio);
             }
 
             @Override
@@ -158,12 +171,39 @@ public abstract class Rounding implements Writeable {
         ) {
             @Override
             long roundFloor(long utcMillis, int multiplier) {
-                return DateUtils.roundFloor(utcMillis, ratio * multiplier);
+                assert multiplier == 1;
+                return DateUtils.roundFloor(utcMillis, ratio);
             }
 
             @Override
             long extraLocalOffsetLookup() {
                 return ratio;
+            }
+        },
+        YEARS_OF_CENTURY((byte) 9, "years", ChronoField.YEAR_OF_ERA, false, 12) {
+            private final long extraLocalOffsetLookup = TimeUnit.DAYS.toMillis(366);
+
+            @Override
+            long roundFloor(long utcMillis, int multiplier) {
+                return multiplier == 1 ? DateUtils.roundYear(utcMillis) : DateUtils.roundYearInterval(utcMillis, multiplier);
+            }
+
+            @Override
+            long extraLocalOffsetLookup() {
+                return extraLocalOffsetLookup;
+            }
+        },
+        MONTHS_OF_YEAR((byte) 10, "months", ChronoField.MONTH_OF_YEAR, false, 1) {
+            private final long extraLocalOffsetLookup = TimeUnit.DAYS.toMillis(31);
+
+            @Override
+            long roundFloor(long utcMillis, int multiplier) {
+                return multiplier == 1 ? DateUtils.roundMonthOfYear(utcMillis) : DateUtils.roundIntervalMonthOfYear(utcMillis, multiplier);
+            }
+
+            @Override
+            long extraLocalOffsetLookup() {
+                return extraLocalOffsetLookup;
             }
         };
 
@@ -222,8 +262,10 @@ public abstract class Rounding implements Writeable {
                 case 4 -> MONTH_OF_YEAR;
                 case 5 -> DAY_OF_MONTH;
                 case 6 -> HOUR_OF_DAY;
-                case 7 -> MINUTES_OF_HOUR;
+                case 7 -> MINUTE_OF_HOUR;
                 case 8 -> SECOND_OF_MINUTE;
+                case 9 -> YEARS_OF_CENTURY;
+                case 10 -> MONTHS_OF_YEAR;
                 default -> throw new ElasticsearchException("Unknown date time unit id [" + id + "]");
             };
         }
@@ -238,6 +280,66 @@ public abstract class Rounding implements Writeable {
     }
 
     public abstract byte id();
+
+    public interface Iterator {
+        /**
+         * The rounded value following {@link #next()}.
+         */
+        long getRounded();
+
+        /**
+         * The floor of the current rounded interval.
+         * Returns {@code getRounded()} if current value not an interval.
+         */
+        long getRoundedFloor();
+
+        /**
+         * The ceiling of the current interval.
+         * Returns {@code getRounded()} if current value not an interval.
+         */
+        long getRoundedCeiling();
+
+        /**
+         * Advances to the next value.
+         */
+        boolean next();
+    }
+
+    private static final class PreparedIterator implements Iterator {
+        private long curr;
+        private long next;
+        private final long limit;
+        private final Prepared prepared;
+
+        private PreparedIterator(long curr, long limit, Prepared prepared) {
+            this.curr = curr;
+            this.next = curr;
+            this.limit = limit;
+            this.prepared = prepared;
+        }
+
+        @Override
+        public long getRounded() {
+            return curr;
+        }
+
+        @Override
+        public long getRoundedFloor() {
+            return curr;
+        }
+
+        @Override
+        public long getRoundedCeiling() {
+            return next;
+        }
+
+        @Override
+        public boolean next() {
+            curr = next;
+            next = prepared.nextRoundingValue(next);
+            return next <= limit;
+        }
+    }
 
     /**
      * A strategy for rounding milliseconds since epoch.
@@ -257,6 +359,27 @@ public abstract class Rounding implements Writeable {
         long nextRoundingValue(long utcMillis);
 
         /**
+         * The floor of the interval denoted by {@code utcMillis}. Caller must pass a
+         * value that is itself an interval boundary, i.e., produced by {@link #round} or
+         * {@link #nextRoundingValue} on this prepared rounding.
+         */
+        default long roundingFloor(long utcMillis) {
+            return utcMillis;
+        }
+
+        /**
+         * The ceiling of the interval denoted by {@code utcMillis}. Caller must pass a
+         * value that is itself a bucket boundary.
+         */
+        default long roundingCeiling(long utcMillis) {
+            return nextRoundingValue(utcMillis);
+        }
+
+        default Iterator iterator(long startUtcMillis, long endUtcMillis) {
+            return new PreparedIterator(round(startUtcMillis), endUtcMillis, this);
+        }
+
+        /**
          * Given the rounded value, returns the size between this value and the
          * next rounded value in specified units if possible.
          */
@@ -269,11 +392,19 @@ public abstract class Rounding implements Writeable {
 
         /**
          * If this rounding mechanism precalculates rounding points then
-         * this array stores dates such that each date between each entry.
-         * if the rounding mechanism doesn't precalculate points then this
+         * this array stores those points.  The array is such that for an
+         * index {@code i} and a value {@code v}, if {@code points[i] <= v < points[i+1]}
+         * then {@code v} rounds to {@code points[i]}
+         *
+         * <p>If the rounding mechanism doesn't precalculate points then this
          * is {@code null}.
          */
         long[] fixedRoundingPoints();
+
+        /**
+         * @return the original {@link Rounding} that created this instance.
+         */
+        Rounding getUnprepared();
     }
 
     /**
@@ -344,7 +475,6 @@ public abstract class Rounding implements Writeable {
     }
 
     public static class Builder {
-
         private final DateTimeUnit unit;
         private final long interval;
         private final int multiplier;
@@ -397,7 +527,161 @@ public abstract class Rounding implements Writeable {
             if (offset != 0) {
                 rounding = new OffsetRounding(rounding, offset);
             }
+
             return rounding;
+        }
+    }
+
+    /**
+     * Greatest discrete value less than {@param utcMillis}
+     */
+    private static long prevLong(long utcMillis) {
+        if (utcMillis == Long.MIN_VALUE) {
+            return Long.MIN_VALUE;
+        }
+
+        return utcMillis - 1L;
+    }
+
+    public static final class ToUpperRounding extends Rounding {
+        private record Iterator(Rounding.Iterator delegate) implements Rounding.Iterator {
+            private Iterator(Rounding.Prepared p, long startUtcMillis, long endUtcMillis) {
+                this(p.iterator(prevLong(startUtcMillis), endUtcMillis));
+            }
+
+            @Override
+            public long getRounded() {
+                return delegate.getRoundedCeiling();
+            }
+
+            @Override
+            public long getRoundedFloor() {
+                return delegate.getRoundedFloor();
+            }
+
+            @Override
+            public long getRoundedCeiling() {
+                return delegate.getRoundedCeiling();
+            }
+
+            @Override
+            public boolean next() {
+                return delegate.next();
+            }
+        }
+
+        private record Prepared(Rounding.Prepared delegate) implements Rounding.Prepared {
+            @Override
+            public long round(long utcMillis) {
+                return delegate.nextRoundingValue(prevLong(utcMillis));
+            }
+
+            @Override
+            public long roundingFloor(long utcMillis) {
+                return delegate.round(prevLong(utcMillis));
+            }
+
+            @Override
+            public long roundingCeiling(long utcMillis) {
+                return utcMillis;
+            }
+
+            @Override
+            public long nextRoundingValue(long utcMillis) {
+                return delegate.nextRoundingValue(utcMillis);
+            }
+
+            @Override
+            public Rounding.Iterator iterator(long startUtcMillis, long endUtcMillis) {
+                return new ToUpperRounding.Iterator(delegate, startUtcMillis, endUtcMillis);
+            }
+
+            @Override
+            public double roundingSize(long utcMillis, DateTimeUnit timeUnit) {
+                return delegate.roundingSize(utcMillis, timeUnit);
+            }
+
+            @Override
+            public double roundingSize(DateTimeUnit timeUnit) {
+                return delegate.roundingSize(timeUnit);
+            }
+
+            @Override
+            public long[] fixedRoundingPoints() {
+                return delegate.fixedRoundingPoints();
+            }
+
+            @Override
+            public Rounding getUnprepared() {
+                return new ToUpperRounding(delegate.getUnprepared());
+            }
+        }
+
+        private final Rounding next;
+
+        public static Rounding createRounding(Rounding next) {
+            if (next instanceof ToUpperRounding) {
+                return next;
+            }
+            return new ToUpperRounding(next);
+        }
+
+        private ToUpperRounding(Rounding next) {
+            this.next = next;
+        }
+
+        @Override
+        public Rounding.Prepared prepare(long minUtcMillis, long maxUtcMillis) {
+            return new ToUpperRounding.Prepared(next.prepare(prevLong(minUtcMillis), maxUtcMillis));
+        }
+
+        @Override
+        public Rounding.Prepared prepareForUnknown() {
+            return new ToUpperRounding.Prepared(next.prepareForUnknown());
+        }
+
+        @Override
+        public Rounding.Prepared prepareJavaTime() {
+            return new ToUpperRounding.Prepared(next.prepareJavaTime());
+        }
+
+        @Override
+        public void innerWriteTo(StreamOutput out) throws IOException {
+            next.innerWriteTo(out);
+        }
+
+        @Override
+        public byte id() {
+            return next.id();
+        }
+
+        @Override
+        public long offset() {
+            return next.offset();
+        }
+
+        @Override
+        public Rounding withoutOffset() {
+            Rounding withoutOffset = next.withoutOffset();
+            if (withoutOffset == next) {
+                return this;
+            }
+            return ToUpperRounding.createRounding(withoutOffset);
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            return obj instanceof ToUpperRounding other && next.equals(other.next);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(next, RoundingConvention.UP);
+        }
+
+        @Override
+        public String toString() {
+            return "ToUpperRounding[" + next + "]";
         }
     }
 
@@ -480,7 +764,7 @@ public abstract class Rounding implements Writeable {
                 case SECOND_OF_MINUTE:
                     return localDateTime.withNano(0);
 
-                case MINUTES_OF_HOUR:
+                case MINUTE_OF_HOUR:
                     return LocalDateTime.of(
                         localDateTime.getYear(),
                         localDateTime.getMonthValue(),
@@ -512,10 +796,16 @@ public abstract class Rounding implements Writeable {
                     return LocalDateTime.of(localDateTime.getYear(), localDateTime.getMonthValue(), 1, 0, 0);
 
                 case QUARTER_OF_YEAR:
-                    return LocalDateTime.of(localDateTime.getYear(), localDateTime.getMonth().firstMonthOfQuarter(), 1, 0, 0);
+                    return LocalDateTime.of(localDateTime.getYear(), (((localDateTime.getMonthValue() - 1) / 3) * 3) + 1, 1, 0, 0);
 
                 case YEAR_OF_CENTURY:
                     return LocalDateTime.of(LocalDate.of(localDateTime.getYear(), 1, 1), LocalTime.MIDNIGHT);
+
+                case YEARS_OF_CENTURY:
+                    return LocalDateTimeUtils.truncateToYears(localDateTime, multiplier);
+
+                case MONTHS_OF_YEAR:
+                    return LocalDateTimeUtils.truncateToMonths(localDateTime, multiplier);
 
                 default:
                     throw new IllegalArgumentException("NOT YET IMPLEMENTED for unit " + unit);
@@ -523,7 +813,7 @@ public abstract class Rounding implements Writeable {
         }
 
         @Override
-        public Prepared prepare(long minUtcMillis, long maxUtcMillis) {
+        public Rounding.Prepared prepare(long minUtcMillis, long maxUtcMillis) {
             /*
              * 128 is a power of two that isn't huge. We might be able to do
              * better if the limit was based on the actual type of prepared
@@ -574,7 +864,7 @@ public abstract class Rounding implements Writeable {
         }
 
         @Override
-        public Prepared prepareForUnknown() {
+        public Rounding.Prepared prepareForUnknown() {
             LocalTimeOffset offset = LocalTimeOffset.fixedOffset(timeZone);
             if (offset != null) {
                 if (unitRoundsToMidnight) {
@@ -679,6 +969,11 @@ public abstract class Rounding implements Writeable {
             }
 
             @Override
+            public Rounding getUnprepared() {
+                return TimeUnitRounding.this;
+            }
+
+            @Override
             public abstract String toString();
         }
 
@@ -771,7 +1066,7 @@ public abstract class Rounding implements Writeable {
             }
 
             @Override
-            protected Prepared maybeUseArray(long minUtcMillis, long maxUtcMillis, int max) {
+            protected Rounding.Prepared maybeUseArray(long minUtcMillis, long maxUtcMillis, int max) {
                 if (lookup.anyMoveBackToPreviousDay()) {
                     return this;
                 }
@@ -847,7 +1142,7 @@ public abstract class Rounding implements Writeable {
             }
 
             @Override
-            protected Prepared maybeUseArray(long minUtcMillis, long maxUtcMillis, int max) {
+            protected Rounding.Prepared maybeUseArray(long minUtcMillis, long maxUtcMillis, int max) {
                 // We don't have the right information needed to know if this is safe for this time zone so we always use java rounding
                 return this;
             }
@@ -874,11 +1169,11 @@ public abstract class Rounding implements Writeable {
                 assert localMidnight.toLocalTime().equals(LocalTime.MIDNIGHT) : "nextRelevantMidnight should only be called at midnight";
 
                 return switch (unit) {
-                    case DAY_OF_MONTH -> localMidnight.plus(1, ChronoUnit.DAYS);
-                    case WEEK_OF_WEEKYEAR -> localMidnight.plus(7, ChronoUnit.DAYS);
-                    case MONTH_OF_YEAR -> localMidnight.plus(1, ChronoUnit.MONTHS);
-                    case QUARTER_OF_YEAR -> localMidnight.plus(3, ChronoUnit.MONTHS);
-                    case YEAR_OF_CENTURY -> localMidnight.plus(1, ChronoUnit.YEARS);
+                    case DAY_OF_MONTH -> localMidnight.plusDays(multiplier);
+                    case WEEK_OF_WEEKYEAR -> localMidnight.plusDays(7L * multiplier);
+                    case MONTH_OF_YEAR, MONTHS_OF_YEAR -> localMidnight.plusMonths(multiplier);
+                    case QUARTER_OF_YEAR -> localMidnight.plusMonths(3L * multiplier);
+                    case YEAR_OF_CENTURY, YEARS_OF_CENTURY -> localMidnight.plusYears(multiplier);
                     default -> throw new IllegalArgumentException("Unknown round-to-midnight unit: " + unit);
                 };
             }
@@ -996,7 +1291,7 @@ public abstract class Rounding implements Writeable {
         }
 
         @Override
-        public Prepared prepare(long minUtcMillis, long maxUtcMillis) {
+        public Rounding.Prepared prepare(long minUtcMillis, long maxUtcMillis) {
             /*
              * 128 is a power of two that isn't huge. We might be able to do
              * better if the limit was based on the actual type of prepared
@@ -1007,7 +1302,7 @@ public abstract class Rounding implements Writeable {
 
         private TimeIntervalPreparedRounding prepareOffsetOrJavaTimeRounding(long minUtcMillis, long maxUtcMillis) {
             long minLookup = minUtcMillis - interval;
-            long maxLookup = maxUtcMillis;
+            long maxLookup = maxUtcMillis + interval;
 
             LocalTimeOffset.Lookup lookup = LocalTimeOffset.lookup(timeZone, minLookup, maxLookup);
             if (lookup == null) {
@@ -1021,7 +1316,7 @@ public abstract class Rounding implements Writeable {
         }
 
         @Override
-        public Prepared prepareForUnknown() {
+        public Rounding.Prepared prepareForUnknown() {
             LocalTimeOffset offset = LocalTimeOffset.fixedOffset(timeZone);
             if (offset != null) {
                 return new FixedRounding(offset);
@@ -1095,6 +1390,11 @@ public abstract class Rounding implements Writeable {
             }
 
             @Override
+            public Rounding getUnprepared() {
+                return TimeIntervalRounding.this;
+            }
+
+            @Override
             public abstract String toString();
         }
 
@@ -1121,8 +1421,7 @@ public abstract class Rounding implements Writeable {
 
             @Override
             public long nextRoundingValue(long utcMillis) {
-                // TODO this is used in date range's collect so we should optimize it too
-                return new JavaTimeRounding().nextRoundingValue(utcMillis);
+                return offset.localToUtcInThisOffset((roundKey(offset.utcToLocalTime(utcMillis), interval) + 1) * interval);
             }
 
             @Override
@@ -1216,7 +1515,7 @@ public abstract class Rounding implements Writeable {
                     final LocalDateTime rawLocalDateTime = LocalDateTime.ofInstant(utcInstant, timeZone);
 
                     // a millisecond value with the same local time, in UTC, as `utcMillis` has in `timeZone`
-                    final long localMillis = utcMillis + timeZone.getRules().getOffset(utcInstant).getTotalSeconds() * 1000;
+                    final long localMillis = utcMillis + timeZone.getRules().getOffset(utcInstant).getTotalSeconds() * 1000L;
                     assert localMillis == rawLocalDateTime.toInstant(ZoneOffset.UTC).toEpochMilli();
 
                     final long roundedMillis = roundKey(localMillis, interval) * interval;
@@ -1319,7 +1618,7 @@ public abstract class Rounding implements Writeable {
                         Locale.ROOT,
                         "Expected to find the rounding in 100 iterations but didn't for [%d] with [%s]",
                         utcMillis,
-                        TimeIntervalRounding.this.toString()
+                        TimeIntervalRounding.this
                     );
                 logger.debug(
                     "Expected to find the rounding in 100 iterations but didn't for {} using {}",
@@ -1365,48 +1664,22 @@ public abstract class Rounding implements Writeable {
         }
 
         @Override
-        public Prepared prepare(long minUtcMillis, long maxUtcMillis) {
+        public Rounding.Prepared prepare(long minUtcMillis, long maxUtcMillis) {
             return wrapPreparedRounding(delegate.prepare(minUtcMillis - offset, maxUtcMillis - offset));
         }
 
         @Override
-        public Prepared prepareForUnknown() {
+        public Rounding.Prepared prepareForUnknown() {
             return wrapPreparedRounding(delegate.prepareForUnknown());
         }
 
         @Override
-        public Prepared prepareJavaTime() {
+        public Rounding.Prepared prepareJavaTime() {
             return wrapPreparedRounding(delegate.prepareJavaTime());
         }
 
-        private Prepared wrapPreparedRounding(Prepared delegatePrepared) {
-            return new Prepared() {
-                @Override
-                public long round(long utcMillis) {
-                    return delegatePrepared.round(utcMillis - offset) + offset;
-                }
-
-                @Override
-                public long nextRoundingValue(long utcMillis) {
-                    return delegatePrepared.nextRoundingValue(utcMillis - offset) + offset;
-                }
-
-                @Override
-                public double roundingSize(long utcMillis, DateTimeUnit timeUnit) {
-                    return delegatePrepared.roundingSize(utcMillis, timeUnit);
-                }
-
-                @Override
-                public double roundingSize(DateTimeUnit timeUnit) {
-                    return delegatePrepared.roundingSize(timeUnit);
-                }
-
-                @Override
-                public long[] fixedRoundingPoints() {
-                    // TODO we can likely translate here
-                    return null;
-                }
-            };
+        private Rounding.Prepared wrapPreparedRounding(Rounding.Prepared delegatePrepared) {
+            return new PreparedOffsetRounding(delegatePrepared, offset);
         }
 
         @Override
@@ -1437,6 +1710,42 @@ public abstract class Rounding implements Writeable {
         public String toString() {
             return delegate + " offset by " + offset;
         }
+
+    }
+
+    private record PreparedOffsetRounding(Prepared delegatePrepared, long offset) implements Prepared {
+
+        @Override
+        public long round(long utcMillis) {
+            return delegatePrepared.round(utcMillis - offset) + offset;
+        }
+
+        @Override
+        public long nextRoundingValue(long utcMillis) {
+            return delegatePrepared.nextRoundingValue(utcMillis - offset) + offset;
+        }
+
+        @Override
+        public double roundingSize(long utcMillis, DateTimeUnit timeUnit) {
+            return delegatePrepared.roundingSize(utcMillis, timeUnit);
+        }
+
+        @Override
+        public double roundingSize(DateTimeUnit timeUnit) {
+            return delegatePrepared.roundingSize(timeUnit);
+        }
+
+        @Override
+        public long[] fixedRoundingPoints() {
+            // TODO we can likely translate here
+            return null;
+        }
+
+        @Override
+        public Rounding getUnprepared() {
+            Rounding unprepared = delegatePrepared.getUnprepared();
+            return new OffsetRounding(unprepared, offset);
+        }
     }
 
     public static Rounding read(StreamInput in) throws IOException {
@@ -1452,17 +1761,7 @@ public abstract class Rounding implements Writeable {
     /**
      * Implementation of {@link Prepared} using pre-calculated "round down" points.
      */
-    private static class ArrayRounding implements Prepared {
-        private final long[] values;
-        private final int max;
-        private final Prepared delegate;
-
-        private ArrayRounding(long[] values, int max, Prepared delegate) {
-            this.values = values;
-            this.max = max;
-            this.delegate = delegate;
-        }
-
+    private record ArrayRounding(long[] values, int max, Prepared delegate) implements Prepared {
         @Override
         public long round(long utcMillis) {
             assert values[0] <= utcMillis : utcMillis + " must be after " + values[0];
@@ -1494,5 +1793,36 @@ public abstract class Rounding implements Writeable {
         public long[] fixedRoundingPoints() {
             return Arrays.copyOf(values, max);
         }
+
+        @Override
+        public Rounding getUnprepared() {
+            return delegate.getUnprepared();
+        }
+
     }
+
+    public Interval getInterval() {
+        return switch (this) {
+            case Rounding.TimeIntervalRounding interval -> {
+                var timeValue = TimeValue.parseTimeValue(TimeValue.timeValueMillis(interval.interval).toString(), "interval");
+                var unit = timeValue.timeUnit().name();
+                yield new Interval(timeValue.duration(), Strings.toLowercaseAscii(unit.substring(0, unit.length() - 1)));
+            }
+            case Rounding.TimeUnitRounding unit -> {
+                // The MONTHS_OF_YEAR and YEARS_OF_CENTURY units store their short name as a plural noun
+                // ("months", "years"); pair the multiplier with the singular form so the interval reads
+                // naturally (e.g. "(6, month)" rather than "(1, months)").
+                String name = unit.unit.shortName;
+                if (name.endsWith("s")) {
+                    name = name.substring(0, name.length() - 1);
+                }
+                yield new Interval(unit.multiplier, name);
+            }
+            case Rounding.OffsetRounding offset -> offset.delegate.getInterval();
+            case Rounding.ToUpperRounding upper -> upper.next.getInterval();
+            default -> throw new RuntimeException("Unexpected Rounding implementation: " + getClass().getName());
+        };
+    }
+
+    public record Interval(long size, String unit) {}
 }

@@ -23,19 +23,26 @@ import java.util.Objects;
 import static org.elasticsearch.xpack.inference.services.ServiceUtils.extractRequiredString;
 import static org.elasticsearch.xpack.inference.services.custom.CustomServiceSettings.JSON_PARSER;
 
-public class CompletionResponseParser extends BaseCustomResponseParser<ChatCompletionResults> {
+public class CompletionResponseParser extends BaseCustomResponseParser {
 
     public static final String NAME = "completion_response_parser";
     public static final String COMPLETION_PARSER_RESULT = "completion_result";
 
     private final String completionResultPath;
 
-    public static CompletionResponseParser fromMap(Map<String, Object> responseParserMap, ValidationException validationException) {
-        var path = extractRequiredString(responseParserMap, COMPLETION_PARSER_RESULT, JSON_PARSER, validationException);
+    public static CompletionResponseParser fromMap(
+        Map<String, Object> responseParserMap,
+        String scope,
+        ValidationException validationException
+    ) {
+        var path = extractRequiredString(
+            responseParserMap,
+            COMPLETION_PARSER_RESULT,
+            String.join(".", scope, JSON_PARSER),
+            validationException
+        );
 
-        if (validationException.validationErrors().isEmpty() == false) {
-            throw validationException;
-        }
+        validationException.throwIfValidationErrorsExist();
 
         return new CompletionResponseParser(path);
     }
@@ -59,6 +66,10 @@ public class CompletionResponseParser extends BaseCustomResponseParser<ChatCompl
         }
         builder.endObject();
         return builder;
+    }
+
+    String getCompletionResultPath() {
+        return completionResultPath;
     }
 
     @Override
@@ -101,5 +112,10 @@ public class CompletionResponseParser extends BaseCustomResponseParser<ChatCompl
                 )
             );
         }
+    }
+
+    @Override
+    public CompletionResponseParser updateFromMap(Map<String, Object> map, String scope, ValidationException validationException) {
+        return fromMap(map, scope, validationException);
     }
 }

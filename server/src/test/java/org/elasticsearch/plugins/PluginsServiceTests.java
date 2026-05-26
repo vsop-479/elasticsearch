@@ -24,7 +24,6 @@ import org.elasticsearch.plugins.spi.BarPlugin;
 import org.elasticsearch.plugins.spi.BarTestService;
 import org.elasticsearch.plugins.spi.TestService;
 import org.elasticsearch.test.ESTestCase;
-import org.elasticsearch.test.PrivilegedOperations;
 import org.elasticsearch.test.compiler.InMemoryJavaCompiler;
 import org.elasticsearch.test.jar.JarUtils;
 
@@ -69,7 +68,7 @@ public class PluginsServiceTests extends ESTestCase {
             null,
             PluginsLoader.createPluginsLoader(
                 Set.of(),
-                PluginsLoader.loadPluginsBundles(TestEnvironment.newEnvironment(settings).pluginsDir()),
+                PluginsLoader.loadPluginsBundles(TestEnvironment.newEnvironment(settings).pluginsDir(), false),
                 Map.of(),
                 false
             )
@@ -467,7 +466,21 @@ public class PluginsServiceTests extends ESTestCase {
         PluginsService.loadExtensions(
             List.of(
                 new PluginsService.LoadedPlugin(
-                    new PluginDescriptor("extensible", null, null, null, null, classname, null, List.of(), false, false, false, false),
+                    new PluginDescriptor(
+                        "extensible",
+                        null,
+                        null,
+                        null,
+                        null,
+                        classname,
+                        null,
+                        List.of(),
+                        false,
+                        false,
+                        false,
+                        false,
+                        PluginDescriptor.DeploymentTarget.ALL
+                    ),
                     extensiblePlugin,
                     null
                 )
@@ -482,7 +495,21 @@ public class PluginsServiceTests extends ESTestCase {
         PluginsService.loadExtensions(
             List.of(
                 new PluginsService.LoadedPlugin(
-                    new PluginDescriptor("extensible", null, null, null, null, classname, null, List.of(), false, false, false, false),
+                    new PluginDescriptor(
+                        "extensible",
+                        null,
+                        null,
+                        null,
+                        null,
+                        classname,
+                        null,
+                        List.of(),
+                        false,
+                        false,
+                        false,
+                        false,
+                        PluginDescriptor.DeploymentTarget.ALL
+                    ),
                     extensiblePlugin,
                     null
                 ),
@@ -499,7 +526,8 @@ public class PluginsServiceTests extends ESTestCase {
                         false,
                         false,
                         false,
-                        false
+                        false,
+                        PluginDescriptor.DeploymentTarget.ALL
                     ),
                     testPlugin,
                     null
@@ -671,9 +699,11 @@ public class PluginsServiceTests extends ESTestCase {
     }
 
     public void testLoadServiceProviders() throws Exception {
-        URLClassLoader fakeClassLoader = buildTestProviderPlugin("integer");
-        URLClassLoader fakeClassLoader1 = buildTestProviderPlugin("string");
-        try {
+
+        try (
+            URLClassLoader fakeClassLoader = buildTestProviderPlugin("integer");
+            URLClassLoader fakeClassLoader1 = buildTestProviderPlugin("string")
+        ) {
             @SuppressWarnings("unchecked")
             Class<? extends Plugin> fakePluginClass = (Class<? extends Plugin>) fakeClassLoader.loadClass("r.FooPlugin");
             @SuppressWarnings("unchecked")
@@ -699,9 +729,6 @@ public class PluginsServiceTests extends ESTestCase {
             providers = service.loadServiceProviders(TestService.class);
 
             assertEquals(0, providers.size());
-        } finally {
-            PrivilegedOperations.closeURLClassLoader(fakeClassLoader);
-            PrivilegedOperations.closeURLClassLoader(fakeClassLoader1);
         }
     }
 
@@ -786,7 +813,7 @@ public class PluginsServiceTests extends ESTestCase {
 
         var pluginService = newPluginsService(settings);
         try {
-            assertCriticalWarnings("""
+            assertWarnings("""
                 Plugin class p.DeprecatedPlugin from plugin deprecated-plugin implements deprecated method getShardsAllocators from \
                 plugin interface ClusterPlugin. This method will be removed in a future release.""");
         } finally {
@@ -877,13 +904,13 @@ public class PluginsServiceTests extends ESTestCase {
         for (var lp : pluginService.plugins()) {
             if (lp.classLoader() instanceof URLClassLoader urlClassLoader) {
                 try {
-                    PrivilegedOperations.closeURLClassLoader(urlClassLoader);
+                    urlClassLoader.close();
                 } catch (IOException unexpected) {
                     throw new UncheckedIOException(unexpected);
                 }
             } else if (lp.classLoader() instanceof UberModuleClassLoader loader) {
                 try {
-                    PrivilegedOperations.closeURLClassLoader(loader.getInternalLoader());
+                    loader.getInternalLoader().close();
                 } catch (Exception e) {
                     throw new RuntimeException(e);
                 }

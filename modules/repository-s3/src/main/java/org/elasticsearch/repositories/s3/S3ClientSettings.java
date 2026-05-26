@@ -18,6 +18,7 @@ import org.elasticsearch.common.settings.SecureString;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.core.UpdateForV10;
 
@@ -27,6 +28,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+
+import static org.elasticsearch.repositories.s3.S3Repository.MAX_FILE_SIZE;
+import static org.elasticsearch.repositories.s3.S3Repository.MIN_PART_SIZE_USING_MULTIPART;
 
 /**
  * A container for settings used to create an S3 client.
@@ -77,9 +81,10 @@ final class S3ClientSettings {
         key -> new Setting<>(key, "", s -> s.toLowerCase(Locale.ROOT), Property.NodeScope)
     );
 
-    /** Formerly the protocol to use to connect to s3, now unused. V2 AWS SDK can infer the protocol from {@link #endpoint}. */
-    @UpdateForV10(owner = UpdateForV10.Owner.DISTRIBUTED_COORDINATION) // no longer used, should be removed in v10
-    static final Setting.AffixSetting<HttpScheme> UNUSED_PROTOCOL_SETTING = Setting.affixKeySetting(
+    /** The protocol to use to connect to s3, now only used if {@link #endpoint} is not a proper URI that starts with {@code http://} or
+     * {@code https://}. */
+    @UpdateForV10(owner = UpdateForV10.Owner.DISTRIBUTED) // no longer used, should be removed in v10
+    static final Setting.AffixSetting<HttpScheme> PROTOCOL_SETTING = Setting.affixKeySetting(
         PREFIX,
         "protocol",
         key -> new Setting<>(key, "https", s -> HttpScheme.valueOf(s.toUpperCase(Locale.ROOT)), Property.NodeScope, Property.Deprecated)
@@ -141,8 +146,18 @@ final class S3ClientSettings {
         key -> Setting.intSetting(key, Defaults.RETRY_COUNT, 0, Property.NodeScope)
     );
 
+    /**
+     * The maximum time for a single attempt of an API operation. See also
+     * <a href="https://docs.aws.amazon.com/sdk-for-java/latest/developer-guide/timeouts.html">AWS SDK docs on timeout</a>
+     */
+    static final Setting.AffixSetting<TimeValue> API_CALL_TIMEOUT_SETTING = Setting.affixKeySetting(
+        PREFIX,
+        "api_call_timeout",
+        key -> Setting.timeSetting(key, Defaults.API_CALL_TIMEOUT, Property.NodeScope)
+    );
+
     /** Formerly whether retries should be throttled (ie use backoff), now unused. V2 AWS SDK always uses throttling. */
-    @UpdateForV10(owner = UpdateForV10.Owner.DISTRIBUTED_COORDINATION) // no longer used, should be removed in v10
+    @UpdateForV10(owner = UpdateForV10.Owner.DISTRIBUTED) // no longer used, should be removed in v10
     static final Setting.AffixSetting<Boolean> UNUSED_USE_THROTTLE_RETRIES_SETTING = Setting.affixKeySetting(
         PREFIX,
         "use_throttle_retries",
@@ -171,15 +186,49 @@ final class S3ClientSettings {
     );
 
     /** Formerly an override for the signer to use, now unused. V2 AWS SDK only supports AWS v4 signatures. */
-    @UpdateForV10(owner = UpdateForV10.Owner.DISTRIBUTED_COORDINATION) // no longer used, should be removed in v10
+    @UpdateForV10(owner = UpdateForV10.Owner.DISTRIBUTED) // no longer used, should be removed in v10
     static final Setting.AffixSetting<String> UNUSED_SIGNER_OVERRIDE = Setting.affixKeySetting(
         PREFIX,
         "signer_override",
         key -> Setting.simpleString(key, Property.NodeScope, Property.Deprecated)
     );
 
+    /** Whether to include the {@code x-purpose} custom query parameter in all requests. */
+    static final Setting.AffixSetting<Boolean> ADD_PURPOSE_CUSTOM_QUERY_PARAMETER = Setting.affixKeySetting(
+        PREFIX,
+        "add_purpose_custom_query_parameter",
+        key -> Setting.boolSetting(key, false, Property.NodeScope)
+    );
+
+    static final Setting.AffixSetting<TimeValue> CONNECTION_MAX_IDLE_TIME_SETTING = Setting.affixKeySetting(
+        PREFIX,
+        "connection_max_idle_time",
+        key -> Setting.timeSetting(key, Defaults.CONNECTION_MAX_IDLE_TIME, Property.NodeScope)
+    );
+
+    /**
+     * Maximum size allowed for copy without multipart.
+     * Objects larger than this will be copied using multipart copy. S3 enforces a minimum multipart size of 5 MiB and a maximum
+     * non-multipart copy size of 5 GiB. The default is to use the maximum allowable size in order to minimize request count.
+     */
+    static final Setting.AffixSetting<ByteSizeValue> MAX_COPY_SIZE_BEFORE_MULTIPART = Setting.affixKeySetting(
+        PREFIX,
+        "max_copy_size_before_multipart",
+        key -> Setting.byteSizeSetting(key, MAX_FILE_SIZE, MIN_PART_SIZE_USING_MULTIPART, MAX_FILE_SIZE, Property.NodeScope)
+    );
+
+    /** Tenacious retries for transient blob store errors. */
+    static final Setting.AffixSetting<Boolean> S3_TENACIOUS_RETRIES_ENABLED_SETTING = Setting.affixKeySetting(
+        PREFIX,
+        "tenacious_retries.enabled",
+        key -> Setting.boolSetting(key, false, Property.NodeScope)
+    );
+
     /** Credentials to authenticate with s3. */
     final AwsCredentials credentials;
+
+    /** The scheme (HTTP or HTTPS) for talking to the endpoint, for use only if the endpoint doesn't contain an explicit scheme */
+    final HttpScheme protocol;
 
     /** The s3 endpoint the client should talk to, or empty string to use the default. */
     final String endpoint;
@@ -204,11 +253,21 @@ final class S3ClientSettings {
     /** The read timeout for the s3 client. */
     final int readTimeoutMillis;
 
+    /**
+     * The maximum idle time (in millis) of a connection before it is discarded from the connection pool.
+     */
+    final long connectionMaxIdleTimeMillis;
+
     /** The maximum number of concurrent connections to use. */
     final int maxConnections;
 
     /** The number of retries to use for the s3 client. */
     final int maxRetries;
+
+    /**
+     * The maximum time for a single attempt of an API operation
+     */
+    final TimeValue apiCallTimeout;
 
     /** Whether the s3 client should use path style access. */
     final boolean pathStyleAccess;
@@ -216,11 +275,21 @@ final class S3ClientSettings {
     /** Whether chunked encoding should be disabled or not. */
     final boolean disableChunkedEncoding;
 
+    /** Whether to add the {@code x-purpose} custom query parameter to all requests. */
+    final boolean addPurposeCustomQueryParameter;
+
     /** Region to use for signing requests or empty string to use default. */
     final String region;
 
+    /** Maximum size allowed for copy without multipart */
+    final ByteSizeValue maxCopySizeBeforeMultipart;
+
+    /** Tenacious retries for transient blob store errors. */
+    final boolean tenaciousRetriesEnabled;
+
     private S3ClientSettings(
         AwsCredentials credentials,
+        HttpScheme protocol,
         String endpoint,
         String proxyHost,
         int proxyPort,
@@ -228,13 +297,19 @@ final class S3ClientSettings {
         String proxyUsername,
         String proxyPassword,
         int readTimeoutMillis,
+        long connectionMaxIdleTimeMillis,
         int maxConnections,
         int maxRetries,
+        TimeValue apiCallTimeout,
         boolean pathStyleAccess,
         boolean disableChunkedEncoding,
-        String region
+        boolean addPurposeCustomQueryParameter,
+        String region,
+        ByteSizeValue maxCopySizeBeforeMultipart,
+        boolean tenaciousRetriesEnabled
     ) {
         this.credentials = credentials;
+        this.protocol = protocol;
         this.endpoint = endpoint;
         this.proxyHost = proxyHost;
         this.proxyPort = proxyPort;
@@ -242,11 +317,16 @@ final class S3ClientSettings {
         this.proxyUsername = proxyUsername;
         this.proxyPassword = proxyPassword;
         this.readTimeoutMillis = readTimeoutMillis;
+        this.connectionMaxIdleTimeMillis = connectionMaxIdleTimeMillis;
         this.maxConnections = maxConnections;
         this.maxRetries = maxRetries;
+        this.apiCallTimeout = apiCallTimeout;
         this.pathStyleAccess = pathStyleAccess;
         this.disableChunkedEncoding = disableChunkedEncoding;
+        this.addPurposeCustomQueryParameter = addPurposeCustomQueryParameter;
         this.region = region;
+        this.maxCopySizeBeforeMultipart = maxCopySizeBeforeMultipart;
+        this.tenaciousRetriesEnabled = tenaciousRetriesEnabled;
     }
 
     /**
@@ -261,6 +341,7 @@ final class S3ClientSettings {
             .put(repositorySettings)
             .normalizePrefix(PREFIX + PLACEHOLDER_CLIENT + '.')
             .build();
+        final HttpScheme newProtocol = getRepoSettingOrDefault(PROTOCOL_SETTING, normalizedSettings, protocol);
         final String newEndpoint = getRepoSettingOrDefault(ENDPOINT_SETTING, normalizedSettings, endpoint);
 
         final String newProxyHost = getRepoSettingOrDefault(PROXY_HOST_SETTING, normalizedSettings, proxyHost);
@@ -271,11 +352,17 @@ final class S3ClientSettings {
         );
         final int newMaxConnections = getRepoSettingOrDefault(MAX_CONNECTIONS_SETTING, normalizedSettings, maxConnections);
         final int newMaxRetries = getRepoSettingOrDefault(MAX_RETRIES_SETTING, normalizedSettings, maxRetries);
+        final TimeValue newApiCallTimeout = getRepoSettingOrDefault(API_CALL_TIMEOUT_SETTING, normalizedSettings, apiCallTimeout);
         final boolean newPathStyleAccess = getRepoSettingOrDefault(USE_PATH_STYLE_ACCESS, normalizedSettings, pathStyleAccess);
         final boolean newDisableChunkedEncoding = getRepoSettingOrDefault(
             DISABLE_CHUNKED_ENCODING,
             normalizedSettings,
             disableChunkedEncoding
+        );
+        final boolean newAddPurposeCustomQueryParameter = getRepoSettingOrDefault(
+            ADD_PURPOSE_CUSTOM_QUERY_PARAMETER,
+            normalizedSettings,
+            addPurposeCustomQueryParameter
         );
         final AwsCredentials newCredentials;
         if (checkDeprecatedCredentials(repositorySettings)) {
@@ -284,21 +371,43 @@ final class S3ClientSettings {
             newCredentials = credentials;
         }
         final String newRegion = getRepoSettingOrDefault(REGION, normalizedSettings, region);
-        if (Objects.equals(endpoint, newEndpoint)
+        final long newConnectionMaxIdleTimeMillis = getRepoSettingOrDefault(
+            CONNECTION_MAX_IDLE_TIME_SETTING,
+            normalizedSettings,
+            TimeValue.timeValueMillis(connectionMaxIdleTimeMillis)
+        ).millis();
+        final ByteSizeValue newMaxCopySizeBeforeMultipart = getRepoSettingOrDefault(
+            MAX_COPY_SIZE_BEFORE_MULTIPART,
+            normalizedSettings,
+            maxCopySizeBeforeMultipart
+        );
+        final boolean newTenaciousRetriesEnabled = getRepoSettingOrDefault(
+            S3_TENACIOUS_RETRIES_ENABLED_SETTING,
+            normalizedSettings,
+            tenaciousRetriesEnabled
+        );
+        if (Objects.equals(protocol, newProtocol)
+            && Objects.equals(endpoint, newEndpoint)
             && Objects.equals(proxyHost, newProxyHost)
             && proxyPort == newProxyPort
             && proxyScheme == newProxyScheme
             && newReadTimeoutMillis == readTimeoutMillis
+            && Objects.equals(connectionMaxIdleTimeMillis, newConnectionMaxIdleTimeMillis)
             && maxConnections == newMaxConnections
             && maxRetries == newMaxRetries
+            && apiCallTimeout.equals(newApiCallTimeout)
             && Objects.equals(credentials, newCredentials)
             && newPathStyleAccess == pathStyleAccess
             && newDisableChunkedEncoding == disableChunkedEncoding
-            && Objects.equals(region, newRegion)) {
+            && newAddPurposeCustomQueryParameter == addPurposeCustomQueryParameter
+            && Objects.equals(region, newRegion)
+            && Objects.equals(maxCopySizeBeforeMultipart, newMaxCopySizeBeforeMultipart)
+            && tenaciousRetriesEnabled == newTenaciousRetriesEnabled) {
             return this;
         }
         return new S3ClientSettings(
             newCredentials,
+            newProtocol,
             newEndpoint,
             newProxyHost,
             newProxyPort,
@@ -306,11 +415,16 @@ final class S3ClientSettings {
             proxyUsername,
             proxyPassword,
             newReadTimeoutMillis,
+            newConnectionMaxIdleTimeMillis,
             newMaxConnections,
             newMaxRetries,
+            newApiCallTimeout,
             newPathStyleAccess,
             newDisableChunkedEncoding,
-            newRegion
+            newAddPurposeCustomQueryParameter,
+            newRegion,
+            newMaxCopySizeBeforeMultipart,
+            newTenaciousRetriesEnabled
         );
     }
 
@@ -405,6 +519,7 @@ final class S3ClientSettings {
         ) {
             return new S3ClientSettings(
                 S3ClientSettings.loadCredentials(settings, clientName),
+                getConfigValue(settings, clientName, PROTOCOL_SETTING),
                 getConfigValue(settings, clientName, ENDPOINT_SETTING),
                 getConfigValue(settings, clientName, PROXY_HOST_SETTING),
                 getConfigValue(settings, clientName, PROXY_PORT_SETTING),
@@ -412,11 +527,16 @@ final class S3ClientSettings {
                 proxyUsername.toString(),
                 proxyPassword.toString(),
                 Math.toIntExact(getConfigValue(settings, clientName, READ_TIMEOUT_SETTING).millis()),
+                getConfigValue(settings, clientName, CONNECTION_MAX_IDLE_TIME_SETTING).millis(),
                 getConfigValue(settings, clientName, MAX_CONNECTIONS_SETTING),
                 getConfigValue(settings, clientName, MAX_RETRIES_SETTING),
+                getConfigValue(settings, clientName, API_CALL_TIMEOUT_SETTING),
                 getConfigValue(settings, clientName, USE_PATH_STYLE_ACCESS),
                 getConfigValue(settings, clientName, DISABLE_CHUNKED_ENCODING),
-                getConfigValue(settings, clientName, REGION)
+                getConfigValue(settings, clientName, ADD_PURPOSE_CUSTOM_QUERY_PARAMETER),
+                getConfigValue(settings, clientName, REGION),
+                getConfigValue(settings, clientName, MAX_COPY_SIZE_BEFORE_MULTIPART),
+                getConfigValue(settings, clientName, S3_TENACIOUS_RETRIES_ENABLED_SETTING)
             );
         }
     }
@@ -432,22 +552,29 @@ final class S3ClientSettings {
         final S3ClientSettings that = (S3ClientSettings) o;
         return proxyPort == that.proxyPort
             && readTimeoutMillis == that.readTimeoutMillis
+            && Objects.equals(connectionMaxIdleTimeMillis, that.connectionMaxIdleTimeMillis)
             && maxConnections == that.maxConnections
             && maxRetries == that.maxRetries
+            && apiCallTimeout == that.apiCallTimeout
             && Objects.equals(credentials, that.credentials)
+            && Objects.equals(protocol, that.protocol)
             && Objects.equals(endpoint, that.endpoint)
             && Objects.equals(proxyHost, that.proxyHost)
             && proxyScheme == that.proxyScheme
             && Objects.equals(proxyUsername, that.proxyUsername)
             && Objects.equals(proxyPassword, that.proxyPassword)
             && Objects.equals(disableChunkedEncoding, that.disableChunkedEncoding)
-            && Objects.equals(region, that.region);
+            && Objects.equals(addPurposeCustomQueryParameter, that.addPurposeCustomQueryParameter)
+            && Objects.equals(region, that.region)
+            && Objects.equals(maxCopySizeBeforeMultipart, that.maxCopySizeBeforeMultipart)
+            && tenaciousRetriesEnabled == that.tenaciousRetriesEnabled;
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(
             credentials,
+            protocol,
             endpoint,
             proxyHost,
             proxyPort,
@@ -455,10 +582,15 @@ final class S3ClientSettings {
             proxyUsername,
             proxyPassword,
             readTimeoutMillis,
+            connectionMaxIdleTimeMillis,
             maxRetries,
+            apiCallTimeout,
             maxConnections,
             disableChunkedEncoding,
-            region
+            addPurposeCustomQueryParameter,
+            region,
+            maxCopySizeBeforeMultipart,
+            tenaciousRetriesEnabled
         );
     }
 
@@ -476,7 +608,10 @@ final class S3ClientSettings {
 
     static final class Defaults {
         static final TimeValue READ_TIMEOUT = TimeValue.timeValueSeconds(50);
+        static final TimeValue CONNECTION_MAX_IDLE_TIME = TimeValue.timeValueSeconds(60);
         static final int MAX_CONNECTIONS = 50;
         static final int RETRY_COUNT = 3;
+        static final TimeValue API_CALL_TIMEOUT = TimeValue.MINUS_ONE; // default to no API call timeout
     }
+
 }

@@ -53,6 +53,7 @@ public class RerankResponseParserTests extends AbstractBWCWireSerializationTestC
                     "$.result.scores[*].document_text"
                 )
             ),
+            "scope",
             validation
         );
 
@@ -64,7 +65,11 @@ public class RerankResponseParserTests extends AbstractBWCWireSerializationTestC
 
     public void testFromMap_WithoutOptionalFields() {
         var validation = new ValidationException();
-        var parser = RerankResponseParser.fromMap(new HashMap<>(Map.of(RERANK_PARSER_SCORE, "$.result.scores[*].score")), validation);
+        var parser = RerankResponseParser.fromMap(
+            new HashMap<>(Map.of(RERANK_PARSER_SCORE, "$.result.scores[*].score")),
+            "scope",
+            validation
+        );
 
         assertThat(parser, is(new RerankResponseParser("$.result.scores[*].score", null, null)));
     }
@@ -73,12 +78,12 @@ public class RerankResponseParserTests extends AbstractBWCWireSerializationTestC
         var validation = new ValidationException();
         var exception = expectThrows(
             ValidationException.class,
-            () -> RerankResponseParser.fromMap(new HashMap<>(Map.of("not_path", "$.result[*].embeddings")), validation)
+            () -> RerankResponseParser.fromMap(new HashMap<>(Map.of("not_path", "$.result[*].embeddings")), "scope", validation)
         );
 
         assertThat(
             exception.getMessage(),
-            is("Validation Failed: 1: [json_parser] does not contain the required setting [relevance_score];")
+            is("Validation Failed: 1: [scope.json_parser] does not contain the required setting [relevance_score];")
         );
     }
 
@@ -451,6 +456,15 @@ public class RerankResponseParserTests extends AbstractBWCWireSerializationTestC
 
     @Override
     protected RerankResponseParser mutateInstance(RerankResponseParser instance) throws IOException {
-        return randomValueOtherThan(instance, RerankResponseParserTests::createRandom);
+        var relevanceScorePath = instance.getRelevanceScorePath();
+        var indexPath = instance.getRerankIndexPath();
+        var documentTextPath = instance.getDocumentTextPath();
+        switch (randomInt(2)) {
+            case 0 -> relevanceScorePath = randomValueOtherThan(relevanceScorePath, () -> "$." + randomAlphaOfLength(5));
+            case 1 -> indexPath = randomValueOtherThan(indexPath, () -> randomFrom("$." + randomAlphaOfLength(5), null));
+            case 2 -> documentTextPath = randomValueOtherThan(documentTextPath, () -> randomFrom("$." + randomAlphaOfLength(5), null));
+            default -> throw new AssertionError("Illegal randomisation branch");
+        }
+        return new RerankResponseParser(relevanceScorePath, indexPath, documentTextPath);
     }
 }

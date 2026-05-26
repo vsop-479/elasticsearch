@@ -32,6 +32,7 @@ import static org.elasticsearch.action.admin.cluster.stats.CCSUsageTelemetry.ASY
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertResponse;
 import static org.elasticsearch.xpack.esql.action.EsqlAsyncTestUtils.deleteAsyncId;
+import static org.elasticsearch.xpack.esql.action.EsqlQueryRequest.asyncEsqlQueryRequest;
 import static org.hamcrest.Matchers.equalTo;
 
 public class CrossClusterUsageTelemetryIT extends AbstractCrossClusterUsageTelemetryIT {
@@ -118,24 +119,23 @@ public class CrossClusterUsageTelemetryIT extends AbstractCrossClusterUsageTelem
 
         assertThat(telemetry.getTotalCount(), equalTo(1L));
         assertThat(telemetry.getSuccessCount(), equalTo(0L));
-        assertThat(telemetry.getByRemoteCluster().size(), equalTo(0));
+        assertThat(telemetry.getByRemoteCluster().size(), equalTo(1));
         assertThat(telemetry.getRemotesPerSearchAvg(), equalTo(2.0));
         assertThat(telemetry.getRemotesPerSearchMax(), equalTo(2L));
-        assertThat(telemetry.getSearchCountWithSkippedRemotes(), equalTo(0L));
+        assertThat(telemetry.getSearchCountWithSkippedRemotes(), equalTo(1L));
         Map<String, Long> expectedFailure = Map.of(CCSUsageTelemetry.Result.NOT_FOUND.getName(), 1L);
         assertThat(telemetry.getFailureReasons(), equalTo(expectedFailure));
 
-        // this is only for cluster-a so no skipped remotes
+        // this is only for cluster-a now
         telemetry = getTelemetryFromFailedQuery("from logs-*,cluster-a:no_such_index | stats sum (v)");
         assertThat(telemetry.getTotalCount(), equalTo(2L));
         assertThat(telemetry.getSuccessCount(), equalTo(0L));
-        assertThat(telemetry.getByRemoteCluster().size(), equalTo(0));
+        assertThat(telemetry.getByRemoteCluster().size(), equalTo(1));
         assertThat(telemetry.getRemotesPerSearchAvg(), equalTo(2.0));
         assertThat(telemetry.getRemotesPerSearchMax(), equalTo(2L));
-        assertThat(telemetry.getSearchCountWithSkippedRemotes(), equalTo(0L));
+        assertThat(telemetry.getSearchCountWithSkippedRemotes(), equalTo(1L));
         expectedFailure = Map.of(CCSUsageTelemetry.Result.NOT_FOUND.getName(), 2L);
         assertThat(telemetry.getFailureReasons(), equalTo(expectedFailure));
-        assertThat(telemetry.getByRemoteCluster().size(), equalTo(0));
     }
 
     public void testRemoteOnly() throws Exception {
@@ -203,11 +203,10 @@ public class CrossClusterUsageTelemetryIT extends AbstractCrossClusterUsageTelem
         populateRuntimeIndex(REMOTE1, "pause", INDEX_WITH_RUNTIME_MAPPING);
         populateRuntimeIndex(REMOTE2, "pause", INDEX_WITH_RUNTIME_MAPPING);
 
-        EsqlQueryRequest request = EsqlQueryRequest.asyncEsqlQueryRequest();
-        request.query("from logs-*,c*:logs-*,c*:blocking | eval v1=coalesce(const, v) | stats sum (v1)");
-        request.pragmas(AbstractEsqlIntegTestCase.randomPragmas());
-        request.columnar(randomBoolean());
-        request.includeCCSMetadata(randomBoolean());
+        EsqlQueryRequest request = asyncEsqlQueryRequest("from logs-*,c*:logs-*,c*:blocking | eval v1=coalesce(const, v) | stats sum (v1)")
+            .pragmas(AbstractEsqlIntegTestCase.randomPragmas())
+            .columnar(randomBoolean())
+            .includeCCSMetadata(randomBoolean());
 
         AtomicReference<String> asyncExecutionId = new AtomicReference<>();
         assertResponse(cluster(LOCAL_CLUSTER).client(queryNode).execute(EsqlQueryAction.INSTANCE, request), resp -> {

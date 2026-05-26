@@ -55,17 +55,23 @@ options {
  * all other commands.
  */
 import ChangePoint,
+       Dedup,
        Enrich,
        Explain,
        Expression,
        From,
        Fork,
+       Fuse,
+       Inline,
+       InExpression,
        Join,
        Lookup,
+       MMR,
        MvExpand,
        Project,
-       Rrf,
+       Promql,
        Rename,
+       Set,
        Show,
        UnknownCommand;
 

@@ -118,7 +118,24 @@ You can also set a node attribute using the `-E` command line argument when you 
 
 
 `node.attr.<attribute-name>`
-:   ([Dynamic](docs-content://deploy-manage/deploy/self-managed/configure-elasticsearch.md#dynamic-cluster-setting)) A custom attribute that you can assign to a node. For example, you might assign a `rack_id` attribute to each node to ensure that primary and replica shards are not allocated on the same rack. You can specify multiple attributes as a comma-separated list.
+:   ([Dynamic](docs-content://deploy-manage/stack-settings.md#dynamic-cluster-setting)) A custom attribute that you can assign to a node. For example, you might assign a `rack_id` attribute to each node to ensure that primary and replica shards are not allocated on the same rack. You can specify multiple attributes as a comma-separated list.
+
+
+## GPU vector indexing settings [gpu-vector-indexing-settings]
+```{applies_to}
+stack: preview 9.3
+```
+
+`vectors.indexing.use_gpu`
+:   ([Static](docs-content://deploy-manage/stack-settings.md#static-cluster-setting))
+    Controls whether to use GPU for dense vector indexing across the node. Accepts `auto`, `true` or `false`.
+
+    * `auto` (default) - Automatically decide based on GPU availability and required library presence.
+    * `true` - GPU must be used for vector indexing. If GPU or required libraries are unavailable, the node will fail to start.
+    * `false` - GPU will not be used for vector indexing.
+
+    GPU indexing is supported for `hnsw` and `int8_hnsw` index types with `float` element type only.
+    Requires an [Enterprise subscription](https://www.elastic.co/subscriptions).
 
 
 ## Other node settings [other-node-settings]

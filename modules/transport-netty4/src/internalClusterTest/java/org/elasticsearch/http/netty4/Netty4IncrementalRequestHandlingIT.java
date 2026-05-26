@@ -45,32 +45,26 @@ import org.elasticsearch.action.support.ActionTestUtils;
 import org.elasticsearch.action.support.PlainActionFuture;
 import org.elasticsearch.action.support.SubscribableListener;
 import org.elasticsearch.client.internal.node.NodeClient;
-import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.bytes.ReleasableBytesReference;
 import org.elasticsearch.common.collect.Iterators;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
-import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
-import org.elasticsearch.common.settings.ClusterSettings;
-import org.elasticsearch.common.settings.IndexScopedSettings;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.settings.SettingsFilter;
 import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.CollectionUtils;
 import org.elasticsearch.core.Releasable;
 import org.elasticsearch.core.Releasables;
+import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.features.NodeFeature;
 import org.elasticsearch.http.HttpBodyTracer;
 import org.elasticsearch.http.HttpServerTransport;
-import org.elasticsearch.http.HttpTransportSettings;
 import org.elasticsearch.index.IndexingPressure;
 import org.elasticsearch.plugins.ActionPlugin;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.rest.BaseRestHandler;
 import org.elasticsearch.rest.RestChannel;
-import org.elasticsearch.rest.RestController;
 import org.elasticsearch.rest.RestHandler;
 import org.elasticsearch.rest.RestRequest;
 import org.elasticsearch.rest.RestResponse;
@@ -85,6 +79,7 @@ import org.elasticsearch.transport.Transports;
 import org.elasticsearch.transport.netty4.Netty4Utils;
 import org.elasticsearch.xcontent.json.JsonXContent;
 
+import java.io.InputStream;
 import java.nio.channels.ClosedChannelException;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
@@ -107,6 +102,8 @@ import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE;
 import static io.netty.handler.codec.http.HttpHeaderValues.APPLICATION_JSON;
 import static io.netty.handler.codec.http.HttpMethod.POST;
 import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
+import static org.elasticsearch.http.HttpTransportSettings.SETTING_HTTP_CLIENT_STATS_MAX_CLOSED_CHANNEL_AGE;
+import static org.elasticsearch.http.HttpTransportSettings.SETTING_HTTP_MAX_CONTENT_LENGTH;
 import static org.hamcrest.Matchers.anEmptyMap;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.greaterThan;
@@ -120,12 +117,13 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
 
     @Override
     protected Settings nodeSettings(int nodeOrdinal, Settings otherSettings) {
-        Settings.Builder builder = Settings.builder().put(super.nodeSettings(nodeOrdinal, otherSettings));
-        builder.put(
-            HttpTransportSettings.SETTING_HTTP_MAX_CONTENT_LENGTH.getKey(),
-            ByteSizeValue.of(MAX_CONTENT_LENGTH, ByteSizeUnit.BYTES)
-        );
-        return builder.build();
+        return Settings.builder()
+            .put(super.nodeSettings(nodeOrdinal, otherSettings))
+            // reduce max content length just to cut down test duration
+            .put(SETTING_HTTP_MAX_CONTENT_LENGTH.getKey(), ByteSizeValue.of(MAX_CONTENT_LENGTH, ByteSizeUnit.BYTES))
+            // disable time-based expiry of channel stats since we assert that the total request size accumulates
+            .put(SETTING_HTTP_CLIENT_STATS_MAX_CLOSED_CHANNEL_AGE.getKey(), TimeValue.MAX_VALUE)
+            .build();
     }
 
     // ensure empty http content has single 0 size chunk
@@ -205,7 +203,6 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
 
             // await stream handler is ready and request full content
             var handler = clientContext.awaitRestChannelAccepted(opaqueId);
-            assertBusy(() -> assertNotEquals(0, handler.stream.bufSize()));
 
             assertFalse(handler.isClosed());
 
@@ -215,7 +212,6 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
             assertEquals(requestTransmittedLength, handler.readUntilClose());
 
             assertTrue(handler.isClosed());
-            assertEquals(0, handler.stream.bufSize());
         }
     }
 
@@ -232,7 +228,6 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
 
             // await stream handler is ready and request full content
             var handler = clientContext.awaitRestChannelAccepted(opaqueId);
-            assertBusy(() -> assertNotEquals(0, handler.stream.bufSize()));
             assertFalse(handler.isClosed());
 
             // terminate connection on server and wait resources are released
@@ -241,7 +236,6 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
             handler.channel.request().getHttpChannel().close();
             assertThat(safeGet(exceptionFuture), instanceOf(ClosedChannelException.class));
             assertTrue(handler.isClosed());
-            assertBusy(() -> assertEquals(0, handler.stream.bufSize()));
         }
     }
 
@@ -257,7 +251,6 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
 
             // await stream handler is ready and request full content
             var handler = clientContext.awaitRestChannelAccepted(opaqueId);
-            assertBusy(() -> assertNotEquals(0, handler.stream.bufSize()));
             assertFalse(handler.isClosed());
 
             // terminate connection on server and wait resources are released
@@ -269,7 +262,6 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
             final var exception = asInstanceOf(RuntimeException.class, safeGet(exceptionFuture));
             assertEquals(ServerRequestHandler.SIMULATED_EXCEPTION_MESSAGE, exception.getMessage());
             safeAwait(handler.closedLatch);
-            assertBusy(() -> assertEquals(0, handler.stream.bufSize()));
         }
     }
 
@@ -310,7 +302,7 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
                 });
                 handler.readBytes(partSize);
             }
-            assertTrue(handler.stream.hasLast());
+            assertTrue(handler.receivedLastChunk);
         }
     }
 
@@ -395,6 +387,23 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
         }
     }
 
+    public void testEmptyChunkedEncoding() throws Exception {
+        try (var clientContext = newClientContext()) {
+            var opaqueId = clientContext.newOpaqueId();
+            final var emptyStream = new HttpChunkedInput(new ChunkedStream(InputStream.nullInputStream()));
+            final var request = httpRequest(opaqueId, 0);
+            HttpUtil.setTransferEncodingChunked(request, true);
+            clientContext.channel().pipeline().addLast(new ChunkedWriteHandler());
+            clientContext.channel().writeAndFlush(request);
+            clientContext.channel().writeAndFlush(emptyStream);
+
+            var handler = clientContext.awaitRestChannelAccepted(opaqueId);
+            var restRequest = handler.restRequest;
+            assertFalse(restRequest.hasContent());
+            assertNull(restRequest.header("Transfer-Encoding"));
+        }
+    }
+
     // ensures that we don't leak buffers in stream on 400-bad-request
     // some bad requests are dispatched from rest-controller before reaching rest handler
     // test relies on netty's buffer leak detection
@@ -436,7 +445,7 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
                 clientContext.channel().writeAndFlush(httpRequest(opaqueId, contentSize));
                 clientContext.channel().writeAndFlush(randomContent(contentSize, true));
                 final var handler = clientContext.awaitRestChannelAccepted(opaqueId);
-                handler.readAllBytes();
+                assertEquals(contentSize, handler.readAllBytes());
                 handler.sendResponse(new RestResponse(RestStatus.OK, ""));
                 assertEquals(totalBytesSent, clientContext.transportStatsRequestBytesSize());
             }
@@ -515,7 +524,7 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
     }
 
     public void testBulkIndexingRequestSplitting() throws Exception {
-        final var watermarkBytes = between(100, 200);
+        final var watermarkBytes = between(100, 2000);
         final var tinyNode = internalCluster().startCoordinatingOnlyNode(
             Settings.builder()
                 .put(IndexingPressure.SPLIT_BULK_LOW_WATERMARK.getKey(), ByteSizeValue.ofBytes(watermarkBytes))
@@ -531,7 +540,7 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
             final var channel = clientContext.channel();
             channel.writeAndFlush(request);
 
-            final var indexName = randomIdentifier();
+            final var indexName = randomIndexName();
             final var indexCreatedListener = ClusterServiceUtils.addTemporaryStateListener(
                 cs -> Iterators.filter(
                     cs.metadata().indicesAllProjects().iterator(),
@@ -543,13 +552,21 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
 
             final var valueLength = between(10, 30);
             final var docSizeBytes = "{'field':''}".length() + valueLength;
-            final var itemCount = between(watermarkBytes / docSizeBytes + 1, 300); // enough to split at least once
+            final var minItemCount = watermarkBytes / docSizeBytes + 1;
+            final var itemCount = between(minItemCount, minItemCount * 2); // enough to split at least once
             assertThat(itemCount * docSizeBytes, greaterThan(watermarkBytes));
             for (int i = 0; i < itemCount; i++) {
                 channel.write(new DefaultHttpContent(Unpooled.wrappedBuffer(Strings.format("""
                     {"index":{"_index":"%s"}}
                     {"field":"%s"}
                     """, indexName, randomAlphaOfLength(valueLength)).getBytes(StandardCharsets.UTF_8))));
+
+                if (i == minItemCount && randomBoolean()) {
+                    channel.flush();
+                    if (randomBoolean()) {
+                        safeAwait(indexCreatedListener);
+                    }
+                }
             }
 
             channel.flush();
@@ -736,6 +753,7 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
     static class ServerRequestHandler implements BaseRestHandler.RequestBodyChunkConsumer {
         final SubscribableListener<Void> channelAccepted = new SubscribableListener<>();
         final String opaqueId;
+        final RestRequest restRequest;
         private final AtomicReference<ActionListener<Chunk>> nextChunkListenerRef = new AtomicReference<>();
         final Netty4HttpRequestBodyStream stream;
         RestChannel channel;
@@ -743,8 +761,9 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
         final CountDownLatch closedLatch = new CountDownLatch(1);
         volatile boolean shouldThrowInsideHandleChunk = false;
 
-        ServerRequestHandler(String opaqueId, Netty4HttpRequestBodyStream stream) {
+        ServerRequestHandler(String opaqueId, RestRequest restRequest, Netty4HttpRequestBodyStream stream) {
             this.opaqueId = opaqueId;
+            this.restRequest = restRequest;
             this.stream = stream;
         }
 
@@ -907,13 +926,7 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
 
         @Override
         public Collection<RestHandler> getRestHandlers(
-            Settings settings,
-            NamedWriteableRegistry namedWriteableRegistry,
-            RestController restController,
-            ClusterSettings clusterSettings,
-            IndexScopedSettings indexScopedSettings,
-            SettingsFilter settingsFilter,
-            IndexNameExpressionResolver indexNameExpressionResolver,
+            RestHandlersServices restHandlersServices,
             Supplier<DiscoveryNodes> nodesInCluster,
             Predicate<NodeFeature> clusterSupportsFeature
         ) {
@@ -921,6 +934,11 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
                 @Override
                 public String getName() {
                     return ROUTE;
+                }
+
+                @Override
+                public boolean supportsContentStream() {
+                    return true;
                 }
 
                 @Override
@@ -932,7 +950,7 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
                 protected RestChannelConsumer prepareRequest(RestRequest request, NodeClient client) {
                     var stream = (Netty4HttpRequestBodyStream) request.contentStream();
                     var opaqueId = request.getHeaders().get(Task.X_OPAQUE_ID_HTTP_HEADER).get(0);
-                    var handler = new ServerRequestHandler(opaqueId, stream);
+                    var handler = new ServerRequestHandler(opaqueId, request, stream);
                     handlersByOpaqueId.getHandlerFor(opaqueId).onResponse(handler);
                     return handler;
                 }

@@ -13,7 +13,6 @@ import org.elasticsearch.xpack.esql.core.expression.Literal;
 import org.elasticsearch.xpack.esql.core.expression.NamedExpression;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
-import org.elasticsearch.xpack.esql.expression.function.FieldAttributeTests;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.Count;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.Max;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.Min;
@@ -25,6 +24,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.elasticsearch.xpack.esql.expression.function.FieldAttributeTestUtils.createFieldAttribute;
+
 public class AggregateSerializationTests extends AbstractLogicalPlanSerializationTests<Aggregate> {
     @Override
     protected Aggregate createTestInstance() {
@@ -32,11 +33,7 @@ public class AggregateSerializationTests extends AbstractLogicalPlanSerializatio
         LogicalPlan child = randomChild(0);
         List<Expression> groupings = randomFieldAttributes(0, 5, false).stream().map(a -> (Expression) a).toList();
         List<? extends NamedExpression> aggregates = randomAggregates();
-        if (randomBoolean()) {
-            return new Aggregate(source, child, groupings, aggregates);
-        } else {
-            return new TimeSeriesAggregate(source, child, groupings, aggregates, null);
-        }
+        return new Aggregate(source, child, groupings, aggregates);
     }
 
     public static List<? extends NamedExpression> randomAggregates() {
@@ -44,17 +41,18 @@ public class AggregateSerializationTests extends AbstractLogicalPlanSerializatio
         List<NamedExpression> result = new ArrayList<>(size);
         for (int i = 0; i < size; i++) {
             Expression agg = switch (between(0, 5)) {
-                case 0 -> new Max(randomSource(), FieldAttributeTests.createFieldAttribute(1, true));
-                case 1 -> new Min(randomSource(), FieldAttributeTests.createFieldAttribute(1, true));
-                case 2 -> new Count(randomSource(), FieldAttributeTests.createFieldAttribute(1, true));
+                case 0 -> new Max(randomSource(), createFieldAttribute(1, true));
+                case 1 -> new Min(randomSource(), createFieldAttribute(1, true));
+                case 2 -> new Count(randomSource(), createFieldAttribute(1, true));
                 case 3 -> new Top(
                     randomSource(),
-                    FieldAttributeTests.createFieldAttribute(1, true),
+                    createFieldAttribute(1, true),
                     new Literal(randomSource(), between(1, 5), DataType.INTEGER),
-                    new Literal(randomSource(), randomFrom("ASC", "DESC"), DataType.KEYWORD)
+                    Literal.keyword(randomSource(), randomFrom("ASC", "DESC")),
+                    randomBoolean() ? null : createFieldAttribute(1, true)
                 );
-                case 4 -> new Values(randomSource(), FieldAttributeTests.createFieldAttribute(1, true));
-                case 5 -> new Sum(randomSource(), FieldAttributeTests.createFieldAttribute(1, true));
+                case 4 -> new Values(randomSource(), createFieldAttribute(1, true));
+                case 5 -> new Sum(randomSource(), createFieldAttribute(1, true));
                 default -> throw new IllegalArgumentException();
             };
             result.add(new Alias(randomSource(), randomAlphaOfLength(5), agg));
@@ -75,11 +73,7 @@ public class AggregateSerializationTests extends AbstractLogicalPlanSerializatio
             );
             case 2 -> aggregates = randomValueOtherThan(aggregates, AggregateSerializationTests::randomAggregates);
         }
-        if (instance instanceof TimeSeriesAggregate) {
-            return new TimeSeriesAggregate(instance.source(), child, groupings, aggregates, null);
-        } else {
-            return new Aggregate(instance.source(), child, groupings, aggregates);
-        }
+        return new Aggregate(instance.source(), child, groupings, aggregates);
     }
 
     @Override

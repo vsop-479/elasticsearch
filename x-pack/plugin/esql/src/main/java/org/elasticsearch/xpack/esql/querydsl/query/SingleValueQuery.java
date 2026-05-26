@@ -13,17 +13,18 @@ import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.TermQuery;
 import org.elasticsearch.TransportVersion;
-import org.elasticsearch.TransportVersions;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.compute.lucene.query.LuceneSourceOperator;
 import org.elasticsearch.compute.operator.DriverContext;
+import org.elasticsearch.compute.operator.FilterOperator;
 import org.elasticsearch.compute.operator.Warnings;
 import org.elasticsearch.compute.querydsl.query.SingleValueMatchQuery;
 import org.elasticsearch.index.mapper.IgnoredFieldMapper;
 import org.elasticsearch.index.mapper.MappedFieldType;
 import org.elasticsearch.index.mapper.TextFieldMapper;
-import org.elasticsearch.index.query.AbstractQueryBuilder;
+import org.elasticsearch.index.query.LeafQueryBuilder;
 import org.elasticsearch.index.query.MatchNoneQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryRewriteContext;
@@ -50,6 +51,9 @@ import java.util.Objects;
  *     for now we're going to always wrap so we can always push. When we find cases
  *     where double checking is better we'll try that.
  * </p>
+ * <p>
+ *     NOTE: This will only work with {@code text} fields.
+ * </p>
  */
 public class SingleValueQuery extends Query {
     public static final NamedWriteableRegistry.Entry ENTRY = new NamedWriteableRegistry.Entry(
@@ -60,7 +64,7 @@ public class SingleValueQuery extends Query {
 
     private final Query next;
     private final String field;
-    private final boolean useSyntheticSourceDelegate;
+    private final UseSyntheticSourceDelegate useSyntheticSourceDelegate;
 
     /**
      * Build.
@@ -71,6 +75,10 @@ public class SingleValueQuery extends Query {
      *                                   we often want to use its delegate.
      */
     public SingleValueQuery(Query next, String field, boolean useSyntheticSourceDelegate) {
+        this(next, field, useSyntheticSourceDelegate ? UseSyntheticSourceDelegate.YES : UseSyntheticSourceDelegate.NO);
+    }
+
+    public SingleValueQuery(Query next, String field, UseSyntheticSourceDelegate useSyntheticSourceDelegate) {
         super(next.source());
         this.next = next;
         this.field = field;
@@ -79,9 +87,11 @@ public class SingleValueQuery extends Query {
 
     @Override
     protected AbstractBuilder asBuilder() {
-        return useSyntheticSourceDelegate
-            ? new SyntheticSourceDelegateBuilder(next.toQueryBuilder(), field, next.source())
-            : new Builder(next.toQueryBuilder(), field, next.source());
+        return switch (useSyntheticSourceDelegate) {
+            case NO -> new Builder(next.toQueryBuilder(), field, next.source());
+            case YES -> new SyntheticSourceDelegateBuilder(next.toQueryBuilder(), field, next.source());
+            case YES_NEGATED -> new NegatedSyntheticSourceDelegateBuilder(next.toQueryBuilder(), field, next.source());
+        };
     }
 
     @Override
@@ -91,7 +101,11 @@ public class SingleValueQuery extends Query {
 
     @Override
     public SingleValueQuery negate(Source source) {
-        return new SingleValueQuery(next.negate(source), field, useSyntheticSourceDelegate);
+        return new SingleValueQuery(next.negate(source), field, switch (useSyntheticSourceDelegate) {
+            case NO -> UseSyntheticSourceDelegate.NO;
+            case YES -> UseSyntheticSourceDelegate.YES_NEGATED;
+            case YES_NEGATED -> UseSyntheticSourceDelegate.YES;
+        });
     }
 
     @Override
@@ -110,7 +124,12 @@ public class SingleValueQuery extends Query {
         return Objects.hash(super.hashCode(), next, field, useSyntheticSourceDelegate);
     }
 
-    public abstract static class AbstractBuilder extends AbstractQueryBuilder<AbstractBuilder> {
+    @Override
+    public boolean containsPlan() {
+        return next.containsPlan();
+    }
+
+    public abstract static class AbstractBuilder extends LeafQueryBuilder<AbstractBuilder> {
         private final QueryBuilder next;
         private final String field;
         private final Source source;
@@ -125,20 +144,14 @@ public class SingleValueQuery extends Query {
             super(in);
             this.next = in.readNamedWriteable(QueryBuilder.class);
             this.field = in.readString();
-            if (in.getTransportVersion().onOrAfter(TransportVersions.V_8_16_0)) {
-                if (in instanceof PlanStreamInput psi) {
-                    this.source = Source.readFrom(psi);
-                } else {
-                    /*
-                     * For things like CanMatchNodeRequest we serialize without the Source. But we
-                     * don't use it, so that's ok.
-                     */
-                    this.source = Source.readEmpty(in);
-                }
-            } else if (in.getTransportVersion().onOrAfter(TransportVersions.V_8_12_0)) {
-                this.source = readOldSource(in);
+            if (in instanceof PlanStreamInput psi) {
+                this.source = Source.readFrom(psi);
             } else {
-                this.source = Source.EMPTY;
+                /*
+                 * For things like CanMatchNodeRequest we serialize without the Source. But we
+                 * don't use it, so that's ok.
+                 */
+                this.source = Source.readEmpty(in);
             }
         }
 
@@ -146,11 +159,7 @@ public class SingleValueQuery extends Query {
         protected final void doWriteTo(StreamOutput out) throws IOException {
             out.writeNamedWriteable(next);
             out.writeString(field);
-            if (out.getTransportVersion().onOrAfter(TransportVersions.V_8_16_0)) {
-                source.writeTo(out);
-            } else if (out.getTransportVersion().onOrAfter(TransportVersions.V_8_12_0)) {
-                writeOldSource(out, source);
-            }
+            source.writeTo(out);
         }
 
         public QueryBuilder next() {
@@ -188,6 +197,27 @@ public class SingleValueQuery extends Query {
         protected final int doHashCode() {
             return Objects.hash(next, field);
         }
+
+        protected final org.apache.lucene.search.Query simple(MappedFieldType ft, SearchExecutionContext context) throws IOException {
+            SingleValueMatchQuery singleValueQuery = new SingleValueMatchQuery(
+                context.getForField(ft, MappedFieldType.FielddataOperation.SEARCH),
+                Warnings.createWarnings(DriverContext.WarningsMode.COLLECT, source()),
+                "single-value function encountered multi-value"
+            );
+            org.apache.lucene.search.Query rewrite = singleValueQuery.rewrite(context.searcher());
+            if (rewrite instanceof MatchAllDocsQuery) {
+                // nothing to filter
+                return next().toQuery(context);
+            }
+            BooleanQuery.Builder builder = new BooleanQuery.Builder();
+            builder.add(next().toQuery(context), BooleanClause.Occur.FILTER);
+            builder.add(rewrite, BooleanClause.Occur.FILTER);
+            return builder.build();
+        }
+
+        public String fieldName() {
+            return field;
+        }
     }
 
     /**
@@ -218,7 +248,7 @@ public class SingleValueQuery extends Query {
 
         @Override
         public TransportVersion getMinimalSupportedVersion() {
-            return TransportVersions.V_8_11_X; // the first version of ESQL
+            return TransportVersion.minimumCompatible();
         }
 
         @Override
@@ -227,25 +257,7 @@ public class SingleValueQuery extends Query {
             if (ft == null) {
                 return new MatchNoDocsQuery("missing field [" + field() + "]");
             }
-            SingleValueMatchQuery singleValueQuery = new SingleValueMatchQuery(
-                context.getForField(ft, MappedFieldType.FielddataOperation.SEARCH),
-                Warnings.createWarnings(
-                    DriverContext.WarningsMode.COLLECT,
-                    source().source().getLineNumber(),
-                    source().source().getColumnNumber(),
-                    source().text()
-                ),
-                "single-value function encountered multi-value"
-            );
-            org.apache.lucene.search.Query rewrite = singleValueQuery.rewrite(context.searcher());
-            if (rewrite instanceof MatchAllDocsQuery) {
-                // nothing to filter
-                return next().toQuery(context);
-            }
-            BooleanQuery.Builder builder = new BooleanQuery.Builder();
-            builder.add(next().toQuery(context), BooleanClause.Occur.FILTER);
-            builder.add(rewrite, BooleanClause.Occur.FILTER);
-            return builder.build();
+            return simple(ft, context);
         }
 
         @Override
@@ -255,7 +267,7 @@ public class SingleValueQuery extends Query {
     }
 
     /**
-     * Builds a {@code bool} query combining the "next" query, a {@link SingleValueMatchQuery},
+     * Builds a {@code bool} query ANDing the "next" query, a {@link SingleValueMatchQuery},
      * and a {@link TermQuery} making sure we didn't ignore any values. Three total queries.
      * This is only used if the "next" query matches fields that would not be ignored. Read all
      * the paragraphs below to understand it. It's tricky!
@@ -309,19 +321,14 @@ public class SingleValueQuery extends Query {
             if (ft == null) {
                 return new MatchNoDocsQuery("missing field [" + field() + "]");
             }
-            ft = ((TextFieldMapper.TextFieldType) ft).syntheticSourceDelegate();
+            ft = ((TextFieldMapper.TextFieldType) ft).syntheticSourceDelegate().orElse(null);
 
             BooleanQuery.Builder builder = new BooleanQuery.Builder();
             builder.add(next().toQuery(context), BooleanClause.Occur.FILTER);
 
             org.apache.lucene.search.Query singleValueQuery = new SingleValueMatchQuery(
                 context.getForField(ft, MappedFieldType.FielddataOperation.SEARCH),
-                Warnings.createWarnings(
-                    DriverContext.WarningsMode.COLLECT,
-                    source().source().getLineNumber(),
-                    source().source().getColumnNumber(),
-                    source().text()
-                ),
+                Warnings.createWarnings(DriverContext.WarningsMode.COLLECT, source()),
                 "single-value function encountered multi-value"
             );
             singleValueQuery = singleValueQuery.rewrite(context.searcher());
@@ -335,6 +342,92 @@ public class SingleValueQuery extends Query {
                 builder.add(ignored, BooleanClause.Occur.MUST_NOT);
             }
 
+            return builder.build();
+        }
+
+        @Override
+        protected AbstractBuilder rewrite(QueryBuilder next) {
+            return new Builder(next, field(), source());
+        }
+    }
+
+    /**
+     * Builds a query matching either ignored values OR the union of {@code next} query
+     * and {@link SingleValueMatchQuery}. Three total queries. This is used to generate
+     * candidate matches for queries like {@code NOT(a == "b")} where some values of {@code a}
+     * are not indexed. In fact, let's use that as an example.
+     * <p>
+     *     In that case you use a query for {@code a != "b"} as the "next" query. Then
+     *     this query will find all documents where {@code a} is single valued and
+     *     {@code == "b"} AND all documents that have ignored some values of {@code a}.
+     *     This produces <strong>candidate</strong> matches for {@code NOT(a == "b")}.
+     *     It'll find documents like:
+     * </p>
+     * <ul>
+     *     <li>"a"</li>
+     *     <li>ignored_value</li>
+     *     <li>["a", ignored_value]</li>
+     *     <li>[ignored_value1, ignored_value2]</li>
+     *     <li>["b", ignored_field]</li>
+     * </ul>
+     * <p>
+     *     The first and second of those <strong>should</strong> match {@code NOT(a == "b")}.
+     *     The last three should be rejected. So! When using this query you <strong>must</strong>
+     *     push this query to the {@link LuceneSourceOperator} <strong>and</strong>
+     *     retain it in the {@link FilterOperator}.
+     * </p>
+     * <p>
+     *     This will not find:
+     * </p>
+     * <ul>
+     *     <li>"b"</li>
+     * </ul>
+     * <p>
+     *     And that's also great! These can't match {@code NOT(a == "b")}
+     * </p>
+     */
+    public static class NegatedSyntheticSourceDelegateBuilder extends AbstractBuilder {
+        NegatedSyntheticSourceDelegateBuilder(QueryBuilder next, String field, Source source) {
+            super(next, field, source);
+        }
+
+        @Override
+        public String getWriteableName() {
+            throw new UnsupportedOperationException("Not serialized");
+        }
+
+        @Override
+        protected void doXContent(XContentBuilder builder, Params params) throws IOException {
+            builder.startObject("negated_" + ENTRY.name);
+            builder.field("field", field() + ":synthetic_source_delegate");
+            builder.field("next", next(), params);
+            builder.field("source", source().toString());
+            builder.endObject();
+        }
+
+        @Override
+        public TransportVersion getMinimalSupportedVersion() {
+            throw new UnsupportedOperationException("Not serialized");
+        }
+
+        @Override
+        protected final org.apache.lucene.search.Query doToQuery(SearchExecutionContext context) throws IOException {
+            MappedFieldType ft = context.getFieldType(field());
+            if (ft == null) {
+                return new MatchNoDocsQuery("missing field [" + field() + "]");
+            }
+            ft = ((TextFieldMapper.TextFieldType) ft).syntheticSourceDelegate().orElse(null);
+            org.apache.lucene.search.Query svNext = simple(ft, context);
+
+            org.apache.lucene.search.Query ignored = new TermQuery(new org.apache.lucene.index.Term(IgnoredFieldMapper.NAME, ft.name()));
+            ignored = ignored.rewrite(context.searcher());
+            if (ignored instanceof MatchNoDocsQuery) {
+                return svNext;
+            }
+
+            BooleanQuery.Builder builder = new BooleanQuery.Builder();
+            builder.add(svNext, BooleanClause.Occur.SHOULD);
+            builder.add(ignored, BooleanClause.Occur.SHOULD);
             return builder.build();
         }
 
@@ -363,5 +456,11 @@ public class SingleValueQuery extends Query {
 
         String text = in.readString();
         return new Source(new Location(line, charPositionInLine), text);
+    }
+
+    public enum UseSyntheticSourceDelegate {
+        NO,
+        YES,
+        YES_NEGATED;
     }
 }

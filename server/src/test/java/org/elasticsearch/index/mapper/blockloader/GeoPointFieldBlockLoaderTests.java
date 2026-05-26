@@ -17,7 +17,6 @@ import org.elasticsearch.index.mapper.BlockLoaderTestCase;
 import org.elasticsearch.index.mapper.MappedFieldType;
 
 import java.nio.ByteOrder;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -30,29 +29,22 @@ public class GeoPointFieldBlockLoaderTests extends BlockLoaderTestCase {
 
     @Override
     @SuppressWarnings("unchecked")
-    protected Object expected(Map<String, Object> fieldMapping, Object value, TestContext testContext) {
-        var extractedFieldValues = (ExtractedFieldValues) value;
-        var values = extractedFieldValues.values();
-
+    protected Object expected(Map<String, Object> fieldMapping, Object values, TestContext testContext) {
         var nullValue = switch (fieldMapping.get("null_value")) {
             case String s -> convert(s, null, false);
             case null -> null;
             default -> throw new IllegalStateException("Unexpected null_value format");
         };
 
-        if (params.preference() == MappedFieldType.FieldExtractPreference.DOC_VALUES && hasDocValues(fieldMapping, true)) {
-            if (values instanceof List<?> == false) {
-                var point = convert(values, nullValue, testContext.isMultifield());
-                return point != null ? point.getEncoded() : null;
+        // read from doc_values
+        boolean preferToLoadFromDocValues = params.preference() == MappedFieldType.FieldExtractPreference.DOC_VALUES;
+        boolean noPreference = params.preference() == MappedFieldType.FieldExtractPreference.NONE;
+        if (hasDocValues(fieldMapping, true)) {
+            if (preferToLoadFromDocValues) {
+                return longValues(values, nullValue, testContext.isMultifield());
+            } else if (noPreference && params.syntheticSource()) {
+                return bytesRefWkbValues(values, nullValue, testContext.isMultifield());
             }
-
-            var resultList = ((List<Object>) values).stream()
-                .map(v -> convert(v, nullValue, testContext.isMultifield()))
-                .filter(Objects::nonNull)
-                .map(GeoPoint::getEncoded)
-                .sorted()
-                .toList();
-            return maybeFoldList(resultList);
         }
 
         // stored source is used
@@ -75,27 +67,51 @@ public class GeoPointFieldBlockLoaderTests extends BlockLoaderTestCase {
         if (syntheticSourceKeep.equals("all")) {
             return exactValuesFromSource(values, nullValue, false);
         }
-        if (syntheticSourceKeep.equals("arrays") && extractedFieldValues.documentHasObjectArrays()) {
-            return exactValuesFromSource(values, nullValue, false);
-        }
 
         // synthetic source and doc_values are present
         if (hasDocValues(fieldMapping, true)) {
-            if (values instanceof List<?> == false) {
-                return toWKB(normalize(convert(values, nullValue, false)));
-            }
-
-            var resultList = ((List<Object>) values).stream()
-                .map(v -> convert(v, nullValue, false))
-                .filter(Objects::nonNull)
-                .sorted(Comparator.comparingLong(GeoPoint::getEncoded))
-                .map(p -> toWKB(normalize(p)))
-                .toList();
-            return maybeFoldList(resultList);
+            return bytesRefWkbValues(values, nullValue, false);
         }
 
-        // synthetic source but no doc_values so using fallback synthetic source
+        // synthetic source is enabled, but no doc_values are present, so fallback to ignored source
         return exactValuesFromSource(values, nullValue, false);
+    }
+
+    /**
+     * Use when values are stored as points encoded as longs.
+     */
+    @SuppressWarnings("unchecked")
+    private Object longValues(Object values, GeoPoint nullValue, boolean needsMultifieldAdjustment) {
+        if (values instanceof List<?> == false) {
+            var point = convert(values, nullValue, needsMultifieldAdjustment);
+            return point != null ? point.getEncoded() : null;
+        }
+
+        var resultList = ((List<Object>) values).stream()
+            .map(v -> convert(v, nullValue, needsMultifieldAdjustment))
+            .filter(Objects::nonNull)
+            .map(GeoPoint::getEncoded)
+            .sorted()
+            .toList();
+        return maybeFoldList(resultList);
+    }
+
+    /**
+     * Use when values are stored as WKB encoded points.
+     */
+    @SuppressWarnings("unchecked")
+    private Object bytesRefWkbValues(Object values, GeoPoint nullValue, boolean needsMultifieldAdjustment) {
+        if (values instanceof List<?> == false) {
+            return toWKB(normalize(convert(values, nullValue, needsMultifieldAdjustment)));
+        }
+
+        var resultList = ((List<Object>) values).stream()
+            .map(v -> convert(v, nullValue, needsMultifieldAdjustment))
+            .filter(Objects::nonNull)
+            .sorted(Comparator.comparingLong(GeoPoint::getEncoded))
+            .map(p -> toWKB(normalize(p)))
+            .toList();
+        return maybeFoldList(resultList);
     }
 
     @SuppressWarnings("unchecked")
@@ -110,61 +126,6 @@ public class GeoPointFieldBlockLoaderTests extends BlockLoaderTestCase {
             .map(this::toWKB)
             .toList();
         return maybeFoldList(resultList);
-    }
-
-    private record ExtractedFieldValues(Object values, boolean documentHasObjectArrays) {}
-
-    @Override
-    protected Object getFieldValue(Map<String, Object> document, String fieldName) {
-        var extracted = new ArrayList<>();
-        var documentHasObjectArrays = processLevel(document, fieldName, extracted, false);
-
-        if (extracted.size() == 1) {
-            return new ExtractedFieldValues(extracted.get(0), documentHasObjectArrays);
-        }
-
-        return new ExtractedFieldValues(extracted, documentHasObjectArrays);
-    }
-
-    @SuppressWarnings("unchecked")
-    private boolean processLevel(Map<String, Object> level, String field, ArrayList<Object> extracted, boolean documentHasObjectArrays) {
-        if (field.contains(".") == false) {
-            var value = level.get(field);
-            processLeafLevel(value, extracted);
-            return documentHasObjectArrays;
-        }
-
-        var nameInLevel = field.split("\\.")[0];
-        var entry = level.get(nameInLevel);
-        if (entry instanceof Map<?, ?> m) {
-            return processLevel((Map<String, Object>) m, field.substring(field.indexOf('.') + 1), extracted, documentHasObjectArrays);
-        }
-        if (entry instanceof List<?> l) {
-            for (var object : l) {
-                processLevel((Map<String, Object>) object, field.substring(field.indexOf('.') + 1), extracted, true);
-            }
-            return true;
-        }
-
-        assert false : "unexpected document structure";
-        return false;
-    }
-
-    private void processLeafLevel(Object value, ArrayList<Object> extracted) {
-        if (value instanceof List<?> l) {
-            if (l.size() > 0 && l.get(0) instanceof Double) {
-                // this must be a single point in array form
-                // we'll put it into a different form here to make our lives a bit easier while implementing `expected`
-                extracted.add(Map.of("type", "point", "coordinates", l));
-            } else {
-                // this is actually an array of points but there could still be points in array form inside
-                for (var arrayValue : l) {
-                    processLeafLevel(arrayValue, extracted);
-                }
-            }
-        } else {
-            extracted.add(value);
-        }
     }
 
     @SuppressWarnings("unchecked")
@@ -212,6 +173,12 @@ public class GeoPointFieldBlockLoaderTests extends BlockLoaderTestCase {
         return point;
     }
 
+    /**
+     * Normalizes the given point by forcing it to be encoded and then decoded, similarly to how actual block loaders work when they read
+     * values. During encoding/decoding, some precision may be lost, so the lat/lon coordinates may change. Without this, the point returned
+     * by the block loader will be ever so slightly different from the original point. This will cause the tests to fail. This method
+     * exists to essentially mimic what happens to the point when it gets stored and then later loaded back.
+     */
     private GeoPoint normalize(GeoPoint point) {
         if (point == null) {
             return null;
@@ -226,4 +193,5 @@ public class GeoPointFieldBlockLoaderTests extends BlockLoaderTestCase {
 
         return new BytesRef(WellKnownBinary.toWKB(new Point(point.getX(), point.getY()), ByteOrder.LITTLE_ENDIAN));
     }
+
 }

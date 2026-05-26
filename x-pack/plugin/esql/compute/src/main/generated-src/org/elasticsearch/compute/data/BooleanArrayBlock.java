@@ -23,7 +23,7 @@ import java.util.BitSet;
  * Block implementation that stores values in a {@link BooleanArrayVector}.
  * This class is generated. Edit {@code X-ArrayBlock.java.st} instead.
  */
-final class BooleanArrayBlock extends AbstractArrayBlock implements BooleanBlock {
+public final class BooleanArrayBlock extends AbstractArrayBlock implements BooleanBlock {
 
     static final long BASE_RAM_BYTES_USED = RamUsageEstimator.shallowSizeOfInstance(BooleanArrayBlock.class);
 
@@ -89,6 +89,11 @@ final class BooleanArrayBlock extends AbstractArrayBlock implements BooleanBlock
     }
 
     @Override
+    public int valueMaxByteSize() {
+        return vector.valueMaxByteSize();
+    }
+
+    @Override
     public ToMask toMask() {
         if (getPositionCount() == 0) {
             return new ToMask(blockFactory().newConstantBooleanVector(false, 0), false);
@@ -115,7 +120,7 @@ final class BooleanArrayBlock extends AbstractArrayBlock implements BooleanBlock
     }
 
     @Override
-    public BooleanBlock filter(int... positions) {
+    public BooleanBlock filter(boolean mayContainDuplicates, int... positions) {
         try (var builder = blockFactory().newBooleanBlockBuilder(positions.length)) {
             for (int pos : positions) {
                 if (isNull(pos)) {

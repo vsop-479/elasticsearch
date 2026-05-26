@@ -11,6 +11,7 @@ package org.elasticsearch.index.mapper.blockloader;
 
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.datageneration.FieldType;
+import org.elasticsearch.index.mapper.BinaryDVBlockLoaderTestCase;
 import org.elasticsearch.index.mapper.BlockLoaderTestCase;
 
 import java.util.ArrayList;
@@ -20,25 +21,35 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
-public class TextFieldBlockLoaderTests extends BlockLoaderTestCase {
+public class TextFieldBlockLoaderTests extends BinaryDVBlockLoaderTestCase {
+
     public TextFieldBlockLoaderTests(Params params) {
         super(FieldType.TEXT.toString(), params);
     }
 
     @Override
     protected Object expected(Map<String, Object> fieldMapping, Object value, TestContext testContext) {
-        return expectedValue(fieldMapping, value, params, testContext);
+        logger.info("field mapping={}", fieldMapping);
+        logger.info("value={}", value);
+        logger.info("params={}", params.toString());
+        return expectedValue(fieldMapping, value, params.blTestCaseParams(), testContext, params.binaryDocValues());
     }
 
     @SuppressWarnings("unchecked")
-    public static Object expectedValue(Map<String, Object> fieldMapping, Object value, Params params, TestContext testContext) {
+    public static Object expectedValue(
+        Map<String, Object> fieldMapping,
+        Object value,
+        BlockLoaderTestCase.Params params,
+        TestContext testContext,
+        boolean useBinaryDocValues
+    ) {
         if (fieldMapping.getOrDefault("store", false).equals(true)) {
             return valuesInSourceOrder(value);
         }
 
         var fields = (Map<String, Object>) fieldMapping.get("fields");
         if (fields != null) {
-            var keywordMultiFieldMapping = (Map<String, Object>) fields.get("kwd");
+            var keywordMultiFieldMapping = (Map<String, Object>) fields.get("subfield_keyword");
             Object normalizer = fields.get("normalizer");
             boolean docValues = hasDocValues(keywordMultiFieldMapping, true);
             boolean store = keywordMultiFieldMapping.getOrDefault("store", false).equals(true);
@@ -62,15 +73,8 @@ public class TextFieldBlockLoaderTests extends BlockLoaderTestCase {
             if (params.syntheticSource() && testContext.forceFallbackSyntheticSource() == false && usingSyntheticSourceDelegate) {
                 var nullValue = (String) keywordMultiFieldMapping.get("null_value");
 
-                // Due to how TextFieldMapper#blockReaderDisiLookup works this is complicated.
-                // If we are using lookupMatchingAll() then we'll see all docs, generate synthetic source using syntheticSourceDelegate,
-                // parse it and see null_value inside.
-                // But if we are using lookupFromNorms() we will skip the document (since the text field itself does not exist).
-                // Same goes for lookupFromFieldNames().
-                boolean textFieldIndexed = (boolean) fieldMapping.getOrDefault("index", true);
-
                 if (value == null) {
-                    if (textFieldIndexed == false && nullValue != null && nullValue.length() <= (int) ignoreAbove) {
+                    if (nullValue != null && nullValue.length() <= (int) ignoreAbove) {
                         return new BytesRef(nullValue);
                     }
 
@@ -82,12 +86,6 @@ public class TextFieldBlockLoaderTests extends BlockLoaderTestCase {
                 }
 
                 var values = (List<String>) value;
-
-                // See note above about TextFieldMapper#blockReaderDisiLookup.
-                if (textFieldIndexed && values.stream().allMatch(Objects::isNull)) {
-                    return null;
-                }
-
                 var indexed = values.stream()
                     .map(s -> s == null ? nullValue : s)
                     .filter(Objects::nonNull)
@@ -95,7 +93,8 @@ public class TextFieldBlockLoaderTests extends BlockLoaderTestCase {
                     .map(BytesRef::new)
                     .collect(Collectors.toList());
 
-                if (store == false) {
+                String ssk = (String) keywordMultiFieldMapping.get("synthetic_source_keep");
+                if (store == false && "arrays".equals(ssk) == false) {
                     // using doc_values for synthetic source
                     indexed = new ArrayList<>(new HashSet<>(indexed));
                     indexed.sort(BytesRef::compareTo);
@@ -115,8 +114,27 @@ public class TextFieldBlockLoaderTests extends BlockLoaderTestCase {
             }
         }
 
+        // Loading from binary doc values
+        if (params.syntheticSource() && useBinaryDocValues) {
+            return valuesInSortedOrder(value);
+        }
+
         // Loading from stored field, _ignored_source or stored _source
         return valuesInSourceOrder(value);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Object valuesInSortedOrder(Object value) {
+        if (value == null) {
+            return null;
+        }
+
+        if (value instanceof String s) {
+            return new BytesRef(s);
+        }
+
+        var resultList = ((List<String>) value).stream().filter(Objects::nonNull).map(BytesRef::new).sorted().toList();
+        return maybeFoldList(resultList);
     }
 
     @SuppressWarnings("unchecked")
