@@ -73,6 +73,8 @@ class DatafeedJob {
     @Nullable
     private final String projectRouting;
     private final String jobId;
+    @Nullable
+    private final String cloudCredentialId;
     private final DataDescription dataDescription;
     private final long frequencyMs;
     private final long queryDelayMs;
@@ -82,6 +84,7 @@ class DatafeedJob {
     private final Supplier<Long> currentTimeSupplier;
     private final DelayedDataDetector delayedDataDetector;
     private final Integer maxEmptySearches;
+    private final Integer maxConsecutiveExtractionFailures;
     private final long delayedDataCheckFreq;
     private final CrossClusterSearchStats crossClusterSearchStats;
     private final DatafeedFieldConflictTracker fieldConflictTracker = new DatafeedFieldConflictTracker();
@@ -101,6 +104,7 @@ class DatafeedJob {
         String datafeedId,
         @Nullable String projectRouting,
         String jobId,
+        @Nullable String cloudCredentialId,
         DataDescription dataDescription,
         long frequencyMs,
         long queryDelayMs,
@@ -112,6 +116,7 @@ class DatafeedJob {
         Supplier<Long> currentTimeSupplier,
         DelayedDataDetector delayedDataDetector,
         Integer maxEmptySearches,
+        Integer maxConsecutiveExtractionFailures,
         long latestFinalBucketEndTimeMs,
         long latestRecordTimeMs,
         boolean haveSeenDataPreviously,
@@ -121,6 +126,7 @@ class DatafeedJob {
         this.datafeedId = datafeedId;
         this.projectRouting = projectRouting;
         this.jobId = jobId;
+        this.cloudCredentialId = cloudCredentialId;
         this.dataDescription = Objects.requireNonNull(dataDescription);
         this.frequencyMs = frequencyMs;
         this.queryDelayMs = queryDelayMs;
@@ -132,6 +138,7 @@ class DatafeedJob {
         this.currentTimeSupplier = currentTimeSupplier;
         this.delayedDataDetector = delayedDataDetector;
         this.maxEmptySearches = maxEmptySearches;
+        this.maxConsecutiveExtractionFailures = maxConsecutiveExtractionFailures;
         this.latestFinalBucketEndTimeMs = latestFinalBucketEndTimeMs;
         long lastEndTime = Math.max(latestFinalBucketEndTimeMs, latestRecordTimeMs);
         if (lastEndTime > 0) {
@@ -159,8 +166,25 @@ class DatafeedJob {
         return maxEmptySearches;
     }
 
+    public Integer getMaxConsecutiveExtractionFailures() {
+        return maxConsecutiveExtractionFailures;
+    }
+
     public long numberOfSearchesIn24Hours() {
         return (60_000 * 60 * 24) / frequencyMs;
+    }
+
+    /**
+     * Resolves the effective threshold of consecutive extraction failures after which the datafeed stops itself.
+     * When the datafeed config leaves this unset, the default is roughly one day's worth of searches (at least one),
+     * so a persistently broken datafeed surfaces within a day rather than retrying indefinitely. A configured value
+     * is used verbatim; {@code -1} disables the behaviour so the datafeed retries indefinitely.
+     */
+    public long effectiveMaxConsecutiveExtractionFailures() {
+        if (maxConsecutiveExtractionFailures != null) {
+            return maxConsecutiveExtractionFailures;
+        }
+        return Math.max(1, numberOfSearchesIn24Hours());
     }
 
     public void finishReportingTimingStats() {
@@ -412,6 +436,16 @@ class DatafeedJob {
                     // Instead, it is preferable to retry the given interval next time an extraction
                     // is triggered.
 
+                    // Update CCS stats with any cluster states the extractor observed before failing.
+                    // This keeps skipped_clusters accurate in the running datafeed stats API even when
+                    // every search round fails due to remote clusters being unavailable. Use the full
+                    // updateCrossClusterSearchStats() path so that any confirmed scope change is also
+                    // audited and annotated rather than silently dropped.
+                    List<LinkedClusterState> partialStates = dataExtractor.getLinkedClusterStates();
+                    if (partialStates.isEmpty() == false) {
+                        updateCrossClusterSearchStats(partialStates);
+                    }
+
                     // For aggregated datafeeds it is possible for our users to use fields without doc values.
                     // In that case, it is really useful to display an error message explaining exactly that.
                     // Unfortunately, there are no great ways to identify the issue but search for 'doc values'
@@ -425,9 +459,16 @@ class DatafeedJob {
                             )
                         );
                     }
+                    DataExtractorUtils.CloudCredentialFailureKind credentialFailureKind = DataExtractorUtils
+                        .classifyCloudCredentialSearchFailure(e, cloudCredentialId);
+                    Exception enrichedFailure = DatafeedCloudCredentialDiagnostics.enrichIfCloudCredentialFailure(
+                        cloudCredentialId,
+                        credentialFailureKind,
+                        e
+                    );
                     throw new ExtractionProblemException(
                         nextRealtimeTimestamp(),
-                        DatafeedProjectRoutingDiagnostics.enrichIfNoMatchingProject(datafeedId, projectRouting, e)
+                        DatafeedProjectRoutingDiagnostics.enrichIfNoMatchingProject(datafeedId, projectRouting, enrichedFailure)
                     );
                 }
                 if (isIsolated) {
@@ -645,18 +686,7 @@ class DatafeedJob {
     private void persistScopeChangeAnnotation(CrossClusterSearchStats.ScopeChangeResult scopeChangeResult, String message) {
         Date changeTime = Date.from(scopeChangeResult.changeTimestamp());
         Date now = new Date(currentTimeSupplier.get());
-        Annotation annotation = new Annotation.Builder().setAnnotation(message)
-            .setCreateTime(now)
-            .setCreateUsername(InternalUsers.XPACK_USER.principal())
-            .setTimestamp(changeTime)
-            .setEndTimestamp(changeTime)
-            .setJobId(jobId)
-            .setModifiedTime(now)
-            .setModifiedUsername(InternalUsers.XPACK_USER.principal())
-            .setType(Annotation.Type.ANNOTATION)
-            .setEvent(Annotation.Event.SEARCH_SCOPE_CHANGED)
-            .build();
-        annotationPersister.persistAnnotation(null, annotation);
+        annotationPersister.persistAnnotation(null, Annotation.searchScopeChanged(jobId, message, changeTime, now));
     }
 
     /**
